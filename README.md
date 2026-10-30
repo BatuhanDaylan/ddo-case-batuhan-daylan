@@ -157,7 +157,7 @@ seçildi: aşağıda 3. soru ve [docs/EXPLAIN.md](docs/EXPLAIN.md).
 Şartname "yapılmadı, nedeni şu" diyen dürüstlüğü, çalışıyormuş gibi sunmaktan üstün tutuyor. Eksiklerim:
 
 **Yapılmayanlar**
-- **Bonus:** danışman için **riskli öğrenci uyarısı yapıldı** (`GET /advisor/at-risk`: GANO < 2,00, dönem ortalaması düşüşü, son dönemde 2+ dersten kalma; devamsızlık verisi tutulmadığı için kullanılmadı). **Sürükle-bırak program editörü ve istek/sn grafiği yapılmadı.** Yalnızca canlı istek/kayıt sayaçları paneli var.
+- **Bonus:** danışman için **riskli öğrenci uyarısı yapıldı** (`GET /advisor/at-risk`: GANO < 2,00, dönem ortalaması düşüşü, son dönemde 2+ dersten kalma; devamsızlık verisi tutulmadığı için kullanılmadı). **İstek/sn grafiği yapıldı** (ana sayfa, `/metrics` sayacından 2 sn'de bir türetilir, son 2 dk). **Sürükle-bırak program editörü yapılmadı.** Yalnızca canlı istek/kayıt sayaçları paneli var.
 - **Arayüz için otomatik uçtan uca test** (Playwright) yazılmadı; arayüz için otomatik test yok; API davranışı `make verify` ile otomatik doğrulanıyor.
 - **WAL arşivleme / PITR, yedek şifreleme, uzak yedek depolama** kurulu değil (RUNBOOK §4).
 - **Tek API örneği ve tek PostgreSQL**; yatay ölçekleme ve yüksek erişilebilirlik tasarlanmadı/denenmedi.

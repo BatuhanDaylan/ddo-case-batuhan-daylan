@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ROLE_LABEL, useAuth, type Role } from '../auth';
 import { Badge, Card, PageTitle } from '../ui';
@@ -11,7 +11,7 @@ const SHORTCUTS: Record<Role, { to: string; title: string; text: string }[]> = {
     { to: '/graduation', title: 'Mezuniyet', text: 'Mezuniyet durumun ve kalan derslerin.' },
   ],
   instructor: [{ to: '/sections', title: 'Şubelerim', text: 'Not girişi, ilan, düzeltme talebi ve itirazlar.' }],
-  advisor: [{ to: '/approvals', title: 'Onaylar', text: 'Danışanlarının ders kayıtlarını onayla ya da reddet.' }],
+  advisor: [{ to: '/approvals', title: 'Onaylar', text: 'Danışanlarının kayıtlarını onayla/reddet; riskli öğrenci uyarılarını gör.' }],
   dept_secretary: [
     { to: '/academic', title: 'Akademik Yapı', text: 'Fakülte, bölüm, program ve dersler.' },
     { to: '/terms', title: 'Dönem & Şube', text: 'Kayıt dönemleri, şubeler, derslikler.' },
@@ -54,7 +54,27 @@ function parseMetrics(text: string) {
   return { requests, inflight, outcomes };
 }
 
+const HISTORY = 60;
+
+/** Son örneklerin istek/sn değerlerini çizgi grafiği olarak gösterir (kayıt anındaki yoğunluğu görmek için). */
+function RateChart({ points }: { points: number[] }) {
+  const w = 600;
+  const h = 80;
+  const max = Math.max(1, ...points);
+  const step = w / (HISTORY - 1);
+  const x0 = (HISTORY - points.length) * step;
+  const line = points.map((v, i) => `${(x0 + i * step).toFixed(1)},${(h - 4 - (v / max) * (h - 8)).toFixed(1)}`).join(' ');
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} role="img" aria-label={`İstek/sn grafiği, en yüksek ${max.toFixed(1)}`} preserveAspectRatio="none">
+      <line x1="0" y1={h - 1} x2={w} y2={h - 1} stroke="var(--line)" />
+      {points.length > 1 && <polyline points={line} fill="none" stroke="var(--brand)" strokeWidth="2" vectorEffect="non-scaling-stroke" />}
+    </svg>
+  );
+}
+
 function LivePanel() {
+  const [rates, setRates] = useState<number[]>([]);
+  const last = useRef<{ n: number; t: number } | null>(null);
   const [live, setLive] = useState<Live | null>(null);
   const [err, setErr] = useState(false);
 
@@ -66,6 +86,13 @@ function LivePanel() {
         const hj = await h.json().catch(() => ({}));
         const mt = parseMetrics(await m.text());
         if (!stop) {
+          const now = Date.now();
+          if (last.current) {
+            // Panelin kendi iki isteği (health + metrics) de sayıldığı için düşülür.
+            const rate = Math.max(0, (mt.requests - last.current.n - 2) / ((now - last.current.t) / 1000));
+            setRates((prev) => [...prev, rate].slice(-HISTORY));
+          }
+          last.current = { n: mt.requests, t: now };
           setLive({ ok: h.ok, database: hj.database ?? '?', ...mt, at: new Date() });
           setErr(false);
         }
@@ -74,7 +101,7 @@ function LivePanel() {
       }
     };
     tick();
-    const id = setInterval(tick, 5000);
+    const id = setInterval(tick, 2000);
     return () => {
       stop = true;
       clearInterval(id);
@@ -100,6 +127,14 @@ function LivePanel() {
               {live.outcomes.rule_violation ? `, ${live.outcomes.rule_violation} kural ihlali` : ''}
             </span>
           </div>
+        </div>
+      )}
+      {live && (
+        <div style={{ marginTop: '1rem' }}>
+          <div className="muted" style={{ fontSize: '0.8rem', marginBottom: 4 }}>
+            İstek/sn (son {HISTORY * 2} sn){rates.length > 0 && ` · şu an ${rates[rates.length - 1].toFixed(1)}, en yüksek ${Math.max(...rates).toFixed(1)}`}
+          </div>
+          <RateChart points={rates} />
         </div>
       )}
     </Card>
