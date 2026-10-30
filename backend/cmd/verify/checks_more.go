@@ -190,6 +190,13 @@ func chkF6(t *T, e *env) {
 	t.must(iss.Status == 201 && iss.str("code") != "", "belge düzenleme: %d %s", iss.Status, iss.Raw)
 	code := iss.str("code")
 
+	// İdempotans: aynı Idempotency-Key ile tekrar istek yeni belge üretmez, ilk yanıtı döner.
+	key := "verify-transcript-" + e.sfx
+	k1 := e.call("POST", p("/students/%d/transcripts", st.sid), st.token, nil, "Idempotency-Key", key)
+	k2 := e.call("POST", p("/students/%d/transcripts", st.sid), st.token, nil, "Idempotency-Key", key)
+	t.must(k1.Status == 201 && k2.Status == 201 && k1.id("id") == k2.id("id") && k1.str("code") == k2.str("code") && k2.Header.Get("Idempotent-Replayed") == "true",
+		"aynı anahtar aynı belgeyi dönmedi: %s | %s", k1.Raw, k2.Raw)
+
 	pdf := e.call("GET", iss.str("pdf_url"), st.token, nil)
 	t.must(pdf.Status == 200 && strings.HasPrefix(pdf.Header.Get("Content-Type"), "application/pdf"), "pdf: %d %s", pdf.Status, pdf.Header.Get("Content-Type"))
 	t.must(bytes.HasPrefix(pdf.Raw, []byte("%PDF-")) && len(pdf.Raw) > 5000, "geçerli PDF değil (%d bayt)", len(pdf.Raw))

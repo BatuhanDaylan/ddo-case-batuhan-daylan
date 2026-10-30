@@ -96,7 +96,7 @@ sonucu aynı transaction'da yazar.
 | Karar | Özet |
 |---|---|
 | #1 Kontenjan = şube satır kilidi + CHECK | `SELECT … FOR UPDATE` hem aşımı hem adil sırayı sağlar; `CHECK` ikinci savunma hattıdır. Kilit kaldırılınca test **kırılır** (mutasyon kontrolü) |
-| #3 İdempotans transaction içinde | Anahtar, işle aynı transaction'da yazılır: "anahtar yazıldı ama iş yapılmadı" durumu oluşamaz |
+| #3 İdempotans transaction içinde | Anahtar, işle aynı transaction'da yazılır: "anahtar yazıldı ama iş yapılmadı" durumu oluşamaz. Kayıtta zorunlu; transkript düzenlemede isteğe bağlı (aynı anahtar = aynı belge) |
 | #4 Değiştirilemezlik veritabanında | `audit_log`, `grade_history`, `documents`: `UPDATE/DELETE/TRUNCATE` tetikleyiciyle engellenir (yetkili bağlantı dahil) |
 | #8 Saf kural paketleri | Kapsam %94–99, fuzz, özellik tabanlı testler |
 | #10 Kurallar şube kilidinden ÖNCE | Reddedilecek istek kritik bölümü hiç tutmaz (izde görünür: docs/TRACING.md) |

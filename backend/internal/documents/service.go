@@ -79,14 +79,23 @@ func BuildSnapshot(ctx context.Context, q queryer, studentID int64, now time.Tim
 	return snap, err
 }
 
-// Issue belgeyi düzenler: içeriği dondurur, özetini ve kimliğini HMAC ile imzalar, denetime yazar.
+// Issue belgeyi kendi transaction'ında düzenler.
 func (s *Service) Issue(ctx context.Context, studentID, issuedBy int64, ip string) (Issued, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Issued{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	out, err := s.IssueTx(ctx, tx, studentID, issuedBy, ip)
+	if err != nil {
+		return Issued{}, err
+	}
+	return out, tx.Commit(ctx)
+}
 
+// IssueTx belgeyi çağıranın transaction'ında düzenler: içeriği dondurur, özetini ve kimliğini HMAC ile
+// imzalar, denetime yazar. Commit çağıranındır (Idempotency-Key anahtarıyla aynı transaction'da yazılabilsin diye).
+func (s *Service) IssueTx(ctx context.Context, tx pgx.Tx, studentID, issuedBy int64, ip string) (Issued, error) {
 	snap, err := BuildSnapshot(ctx, tx, studentID, time.Now())
 	if err != nil {
 		return Issued{}, err
@@ -115,7 +124,7 @@ func (s *Service) Issue(ctx context.Context, studentID, issuedBy int64, ip strin
 	}); err != nil {
 		return Issued{}, err
 	}
-	return out, tx.Commit(ctx)
+	return out, nil
 }
 
 var ErrDocumentNotFound = errors.New("belge bulunamadı")

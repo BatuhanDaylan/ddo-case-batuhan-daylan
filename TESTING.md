@@ -102,6 +102,9 @@ Metrikler: <http://localhost:8080/metrics> · OpenAPI: <http://localhost:8080/op
 6. **Sekreter → program çözücü.** `sekreter@uninet.test` → *Program* → **Çöz**: program tablosu ya da çatışan kısıtların listesi görünür.
 7. **Raporlama.** `rektorluk@uninet.test` → *Raporlar*: bölüm başarısı, doluluk ve GANO dağılımı.
 8. **Her ekranda:** yükleme (iskelet), boş durum ve hata durumu görünür; telefon genişliğinde (≤ 480 px) menü açılır-kapanır ve tablolar yatay kayar.
+9. **Bonus → sürükle-bırak program editörü.** `sekreter@uninet.test` → *Program & Sınav* → (program boşsa önce **Çöz ve uygula**) → *Programı elle düzenle*: bir dersi başka hücreye sürükle. Hedef hücre bırakmadan önce yeşil/kırmızı olur; aynı yarıyılın zorunlu dersinin saatine bırakırsan çakışma nedenleriyle reddedilir ve ders yerinde kalır.
+10. **Bonus → canlı istek/sn grafiği.** Herhangi bir hesapla *Ana sayfa* → "Sistem durumu (canlı)": çizgi grafik 2 sn'de bir güncellenir. `make load` çalışırken yükselişi görürsün.
+11. **Bonus → riskli öğrenci uyarısı.** `danisman@uninet.test` → *Onaylar* → "Riskli öğrenciler": GANO < 2,00, dönem ortalaması düşüşü veya son dönemde 2+ dersten kalma uyarıları (demo verisinde riskli öğrenci yoksa "Riskli öğrenci yok" yazar; `make verify` BONUS kimliği bunu üretip denetler).
 
 ## 4. Kanıt komutları (görev kimliğine göre)
 

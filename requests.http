@@ -143,6 +143,10 @@ Content-Type: application/json
 GET {{base}}/departments?faculty_id={{facultyId}}
 Authorization: Bearer {{stu}}
 
+### Programları listele
+GET {{base}}/programs
+Authorization: Bearer {{stu}}
+
 ### Program oluştur
 # @name newProgram
 POST {{base}}/programs
@@ -358,6 +362,10 @@ Content-Type: application/json
 GET {{base}}/course-equivalences
 Authorization: Bearer {{reg}}
 
+### Denkliği sil (kimlik: yukarıdaki listeden)
+DELETE {{base}}/course-equivalences/1
+Authorization: Bearer {{reg}}
+
 ### Muafiyet (yalnızca öğrenci işleri; GANO'ya girmez)
 POST {{base}}/students/1/exemptions
 Authorization: Bearer {{reg}}
@@ -375,6 +383,10 @@ Authorization: Bearer {{ins}}
 Content-Type: application/json
 
 {"method": "absolute", "components": [{"name": "midterm", "weight": 40}, {"name": "final", "weight": 60}]}
+
+### Öğretim üyesi: not yöntemi, ağırlıklar ve ilan durumu
+GET {{base}}/sections/1/grading
+Authorization: Bearer {{ins}}
 
 ### Öğretim üyesi: roster
 GET {{base}}/sections/1/roster
@@ -479,6 +491,10 @@ Content-Type: application/json
 GET {{base}}/terms/1/exams
 Authorization: Bearer {{stu}}
 
+### Sınavı sil (kimlik: yukarıdaki takvimden)
+DELETE {{base}}/exams/1
+Authorization: Bearer {{sec}}
+
 ### Öğrencinin sınav takvimi
 GET {{base}}/me/exam-schedule
 Authorization: Bearer {{stu}}
@@ -495,6 +511,11 @@ Authorization: Bearer {{stu}}
 ###
 @docId = {{newDoc.response.body.id}}
 @docCode = {{newDoc.response.body.code}}
+
+### Aynı Idempotency-Key ile tekrar: yeni belge üretilmez, ilk yanıt aynen döner (Idempotent-Replayed: true)
+POST {{base}}/students/1/transcripts
+Authorization: Bearer {{stu}}
+Idempotency-Key: transkript-deneme-1
 
 ### PDF indir
 GET {{base}}{{newDoc.response.body.pdf_url}}

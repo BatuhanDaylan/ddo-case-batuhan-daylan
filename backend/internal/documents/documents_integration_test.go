@@ -212,3 +212,42 @@ func TestRenderTranscriptManyRowsPaginates(t *testing.T) {
 		t.Errorf("çok satırlı transkript tek sayfaya sığdırıldı (sayfa nesnesi=%d)", n)
 	}
 }
+
+// reqKey bir Idempotency-Key başlığıyla transkript düzenleme isteği atar.
+func (e *env) reqKey(studentIdx int, key string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", fmt.Sprintf("/students/%d/transcripts", e.students[studentIdx]), bytes.NewReader(nil))
+	tok, _ := e.iss.Access(e.registr, auth.RoleRegistrar)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Idempotency-Key", key)
+	rec := httptest.NewRecorder()
+	e.router.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestIssueIsIdempotentWithKey(t *testing.T) {
+	e := setup(t)
+	first := e.reqKey(0, "anahtar-1")
+	second := e.reqKey(0, "anahtar-1")
+	if first.Code != 201 || second.Code != 201 {
+		t.Fatalf("durum: %d %d", first.Code, second.Code)
+	}
+	if first.Body.String() != second.Body.String() || second.Header().Get("Idempotent-Replayed") != "true" {
+		t.Errorf("tekrar istek ilk yanıtı aynen dönmedi:\n%s\n%s", first.Body, second.Body)
+	}
+	if n := scan[int](t, e.pool, `SELECT count(*) FROM documents`); n != 1 {
+		t.Errorf("aynı anahtarla %d belge üretildi, beklenen 1", n)
+	}
+	if n := scan[int](t, e.pool, `SELECT count(*) FROM audit_log WHERE action = 'document.issued'`); n != 1 {
+		t.Errorf("denetim kaydı sayısı %d, beklenen 1", n)
+	}
+	// Aynı anahtar başka bir öğrenci için kullanılamaz.
+	if rec := e.reqKey(1, "anahtar-1"); rec.Code != 422 {
+		t.Errorf("anahtar yeniden kullanımı: %d %s", rec.Code, rec.Body)
+	}
+	// Anahtarsız istek eskisi gibi her seferinde yeni belge üretir.
+	e.issue(t)
+	e.issue(t)
+	if n := scan[int](t, e.pool, `SELECT count(*) FROM documents`); n != 3 {
+		t.Errorf("belge sayısı %d, beklenen 3", n)
+	}
+}

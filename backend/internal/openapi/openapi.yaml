@@ -631,8 +631,12 @@ paths:
     post:
       tags: [Belge]
       summary: Transkript düzenle (içerik dondurulur, HMAC imzalı kod üretilir, denetime yazılır)
+      description: |
+        İsteğe bağlı `Idempotency-Key`: aynı anahtarla gelen tekrar istek yeni belge üretmez, ilk yanıtı aynen döner
+        (`Idempotent-Replayed: true`). Aynı anahtarın farklı bir öğrenci için kullanılması 422 verir.
       x-roles: [student, advisor, registrar, dept_secretary]
-      responses: { "201": { description: "`{id, code, verify_url, pdf_url, issued_at}`" }, "403": { $ref: "#/components/responses/Forbidden" } }
+      parameters: [{ name: Idempotency-Key, in: header, required: false, schema: { type: string, maxLength: 255 } }]
+      responses: { "201": { description: "`{id, code, verify_url, pdf_url, issued_at}`" }, "403": { $ref: "#/components/responses/Forbidden" }, "422": { description: idempotency_key_reuse } }
   /documents/{id}/pdf:
     parameters: [{ $ref: "#/components/parameters/id" }]
     get:
