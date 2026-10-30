@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/batuhan-daylan/uninet/internal/auth"
 	"github.com/batuhan-daylan/uninet/internal/config"
 	"github.com/batuhan-daylan/uninet/internal/db"
 	"github.com/batuhan-daylan/uninet/internal/httpx"
@@ -49,9 +50,22 @@ func run(log *slog.Logger) error {
 	}
 	log.Info("migrasyonlar uygulandı")
 
+	if cfg.SeedDemo {
+		if err := auth.SeedDemoUsers(ctx, pool); err != nil {
+			return err
+		}
+		log.Info("demo kullanıcılar hazır")
+	}
+
+	iss := auth.NewIssuer(cfg.JWTSecret, cfg.AccessTTL)
+	authH, err := auth.NewHandler(pool, iss, cfg.RefreshTTL)
+	if err != nil {
+		return err
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           newRouter(pool),
+		Handler:           newRouter(pool, iss, authH),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -79,13 +93,32 @@ func run(log *slog.Logger) error {
 	return srv.Shutdown(sctx)
 }
 
-func newRouter(pool *pgxpool.Pool) http.Handler {
+func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(25 * time.Second))
 
+	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
+		httpx.Error(w, http.StatusNotFound, "not_found", "kaynak bulunamadı")
+	})
+	r.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method_not_allowed", "yöntem desteklenmiyor")
+	})
+
 	r.Get("/health", healthHandler(pool))
+
+	r.Route("/auth", func(r chi.Router) {
+		r.Post("/login", authH.Login)
+		r.Post("/refresh", authH.Refresh)
+		r.Post("/logout", authH.Logout)
+	})
+
+	// Bu noktadan sonraki her uç nokta kimlik doğrulaması ister; rol kısıtı Require ile eklenir.
+	r.Group(func(r chi.Router) {
+		r.Use(iss.Authenticate)
+		r.Get("/me", authH.Me)
+	})
 	return r
 }
 
