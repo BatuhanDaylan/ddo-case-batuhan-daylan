@@ -200,3 +200,19 @@ aynı yarış türü). Zaman aralığı yarı açıktır: 10:00'da biten sınav,
 okur (arka plan işçisi güncel tutar), bu yüzden 12.000 öğrencide bile tek taramadır. `width_bucket` ile aralıklara bölünür;
 4.00 değeri son aralığa dahil edilir. Yalnızca raporlama/öğrenci işleri/bölüm sekreteri görür.
 **Sınırlama:** GANO dağılımı, işçi kuyruğu boşalana kadar birkaç saniye eski olabilir (nihai tutarlılık).
+
+## 25. Frontend: React + Vite + TypeScript, nginx ile aynı kaynak (origin) üzerinden /api
+**Karar:** Arayüz React 18 + TypeScript (strict) ile yazıldı, Vite ile derlenir ve root olmayan `nginx-unprivileged` imajında
+sunulur. nginx `/api/` isteklerini `backend:8080`'e iletir; tarayıcı yalnızca `localhost:3000` ile konuşur. UI kütüphanesi yok:
+tek bir CSS dosyası (açık/koyu tema, mobil kırılımlar), 4 küçük ortak bileşen (`Async`, `Card`, `Table`, `Notice`).
+**Neden:** (1) Aynı kaynak → CORS yapılandırması ve ön-uçuş (preflight) istekleri yok, refresh token'ı çerezsiz ama güvenli
+taşınır. (2) Vite/TS: tipli API katmanı, hızlı derleme (imaj ~72 kB gzip JS). (3) Ağır bir UI kütüphanesi yerine küçük özel
+bileşenler: bağımlılık yüzeyi küçük, 6 rol için ~15 ekran tutarlı kalır.
+**Davranış kararları:** Her veri ekranı yükleniyor (iskelet), hata (yeniden dene) ve boş durumu ele alır (`Async`). 401'de refresh
+token ile TEK bir yenileme çalışır (rotasyonlu token'ın eşzamanlı iki yenilemeyi "yeniden kullanım" saymaması için). Dar
+ekranlarda ikincil sütunlar gizlenir, eylem düğmeleri hep görünür kalır. QR kodu, herkese açık `/verify/{kod}` arayüz sayfasına
+(`PUBLIC_BASE_URL`) gider; ham JSON `:8080/verify/{kod}` altında da durur. Arayüz sistemin canlı olduğunu başlıkta (sağlık ucu) ve
+ana sayfada (Prometheus sayaçları) gösterir.
+**Bilinen sınırlama:** Token'lar `localStorage`'da tutulur (XSS durumunda okunabilir); üretimde `HttpOnly` çerez + CSRF
+korumasına geçilmelidir. Arayüz için otomatik uçtan uca test (Playwright) yazılmadı; davranış `make verify` (API) ve elle
+yürütülen headless tarayıcı denemeleriyle doğrulandı.

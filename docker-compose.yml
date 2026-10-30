@@ -21,7 +21,7 @@ services:
       HTTP_ADDR: ":8080"
       JWT_SECRET: ${JWT_SECRET}
       DOC_SIGNING_KEY: ${DOC_SIGNING_KEY}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
       SEED_DEMO: ${SEED_DEMO:-true}
       DB_MAX_CONNS: ${DB_MAX_CONNS:-40}
       HASH_CONCURRENCY: ${HASH_CONCURRENCY:-4}
@@ -32,6 +32,20 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Arayüz: http://localhost:3000 (nginx; /api isteklerini backend'e iletir, CORS gerekmez).
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
       interval: 5s
       timeout: 3s
       retries: 20
