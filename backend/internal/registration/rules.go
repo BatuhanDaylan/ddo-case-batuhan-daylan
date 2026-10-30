@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/batuhan-daylan/uninet/internal/db"
 	"github.com/batuhan-daylan/uninet/internal/gradebook"
 	"github.com/batuhan-daylan/uninet/internal/rules"
 )
@@ -32,176 +33,176 @@ type loaded struct {
 // loadInput bir öğrenci ve aday şubeler için kural girdisini veritabanından toplar.
 // Aday şubeler aynı döneme ait olmalıdır.
 func loadInput(ctx context.Context, q querier, studentID int64, candidateIDs []int64) (loaded, error) {
-	var out loaded
 	candidateIDs = slices.Compact(slices.Sorted(slices.Values(candidateIDs)))
+	codes := map[int64]string{} // ders kimliği → kod (iletilerde kullanılır)
 
-	infos := map[int64]rules.SectionInfo{}
-	codes := map[int64]string{}
-	var termID int64
-
-	rows, err := q.Query(ctx,
-		`SELECT s.id, s.course_id, c.ects, c.code, s.term_id, t.registration_open
-		   FROM sections s JOIN courses c ON c.id = s.course_id JOIN terms t ON t.id = s.term_id
-		  WHERE s.id = ANY($1)`, candidateIDs)
+	cands, term, err := loadCandidates(ctx, q, candidateIDs, codes)
 	if err != nil {
-		return out, err
+		return loaded{}, err
 	}
-	var cands []rules.SectionInfo
-	for rows.Next() {
-		var si rules.SectionInfo
-		var code string
-		var term int64
-		var open bool
-		if err := rows.Scan(&si.SectionID, &si.CourseID, &si.ECTS, &code, &term, &open); err != nil {
-			rows.Close()
-			return out, err
-		}
-		if len(cands) > 0 && term != termID {
-			rows.Close()
-			return out, ErrMixedTerms
-		}
-		termID, out.TermOpen = term, open
-		cands = append(cands, si)
-		infos[si.SectionID] = si
-		codes[si.CourseID] = code
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return out, err
-	}
-	if len(cands) != len(candidateIDs) {
-		return out, ErrSectionNotFound
-	}
-
-	// Öğrencinin bu dönemdeki aktif ve bekleyen şubeleri.
-	rows, err = q.Query(ctx,
-		`SELECT s.id, s.course_id, c.ects, c.code
-		   FROM enrollments e JOIN sections s ON s.id = e.section_id JOIN courses c ON c.id = s.course_id
-		  WHERE e.student_id = $1 AND e.status IN ('enrolled', 'waitlisted') AND s.term_id = $2`, studentID, termID)
+	current, err := loadCurrent(ctx, q, studentID, term.id, codes)
 	if err != nil {
-		return out, err
+		return loaded{}, err
 	}
-	var current []rules.SectionInfo
-	for rows.Next() {
-		var si rules.SectionInfo
-		var code string
-		if err := rows.Scan(&si.SectionID, &si.CourseID, &si.ECTS, &code); err != nil {
-			rows.Close()
-			return out, err
-		}
-		current = append(current, si)
-		infos[si.SectionID] = si
-		codes[si.CourseID] = code
+	if err := attachMeetings(ctx, q, cands, current); err != nil {
+		return loaded{}, err
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return out, err
-	}
-
-	// Ders saatleri: aday + mevcut şubeler için tek sorgu.
-	ids := make([]int64, 0, len(infos))
-	for id := range infos {
-		ids = append(ids, id)
-	}
-	rows, err = q.Query(ctx,
-		`SELECT section_id, day, start_min, end_min FROM section_meetings WHERE section_id = ANY($1)`, ids)
+	passed, err := loadPassed(ctx, q, studentID)
 	if err != nil {
-		return out, err
+		return loaded{}, err
 	}
-	meetings := map[int64][]rules.Meeting{}
-	for rows.Next() {
-		var sid int64
-		var m rules.Meeting
-		if err := rows.Scan(&sid, &m.Day, &m.StartMin, &m.EndMin); err != nil {
-			rows.Close()
-			return out, err
-		}
-		meetings[sid] = append(meetings[sid], m)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return out, err
-	}
-	for i := range cands {
-		cands[i].Meetings = meetings[cands[i].SectionID]
-	}
-	for i := range current {
-		current[i].Meetings = meetings[current[i].SectionID]
-	}
-
-	// Geçilmiş dersler ve GANO.
-	passed := map[int64]bool{}
-	rows, err = q.Query(ctx, `SELECT course_id FROM course_results WHERE student_id = $1 AND passed`, studentID)
-	if err != nil {
-		return out, err
-	}
-	for rows.Next() {
-		var cid int64
-		if err := rows.Scan(&cid); err != nil {
-			rows.Close()
-			return out, err
-		}
-		passed[cid] = true
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return out, err
-	}
-	// Denklik: öğrenci Y'yi geçtiyse "X yerine Y sayılır" kaydı olan X de geçilmiş sayılır.
-	if len(passed) > 0 {
-		passedIDs := make([]int64, 0, len(passed))
-		for id := range passed {
-			passedIDs = append(passedIDs, id)
-		}
-		rows, err = q.Query(ctx,
-			`SELECT course_id, substitute_course_id FROM course_equivalences WHERE substitute_course_id = ANY($1)`,
-			passedIDs)
-		if err != nil {
-			return out, err
-		}
-		eq := rules.Equivalences{}
-		for rows.Next() {
-			var course, sub int64
-			if err := rows.Scan(&course, &sub); err != nil {
-				rows.Close()
-				return out, err
-			}
-			eq[course] = append(eq[course], sub)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return out, err
-		}
-		passed = rules.ExpandPassed(passed, eq)
-	}
-
 	// GANO, not motorundaki tek tanımdan gelir (tekrar-alma politikası ve muafiyet kuralları dahil).
 	gano, err := gradebook.LoadGANO(ctx, q, studentID)
 	if err != nil {
-		return out, err
+		return loaded{}, err
 	}
+	prereqs, err := loadPrereqs(ctx, q, cands, codes)
+	if err != nil {
+		return loaded{}, err
+	}
+	if err := fillCourseCodes(ctx, q, codes); err != nil {
+		return loaded{}, err
+	}
+	return loaded{
+		TermOpen: term.open,
+		Input: rules.Input{
+			Current: current, Candidates: cands, Passed: passed, GANO: gano, Prereqs: prereqs, CourseCodes: codes,
+		},
+	}, nil
+}
 
-	// Adayların ön koşulları ve ifadelerde geçen derslerin kodları.
-	candCourses := make([]int64, 0, len(cands))
+type termRef struct {
+	id   int64
+	open bool
+}
+
+// loadCandidates aday şubeleri ve dönemlerini okur. Şubelerden biri yoksa ErrSectionNotFound,
+// farklı dönemlerdeyse ErrMixedTerms döner.
+func loadCandidates(ctx context.Context, q querier, ids []int64, codes map[int64]string) ([]rules.SectionInfo, termRef, error) {
+	var cands []rules.SectionInfo
+	var term termRef
+	err := db.Each(ctx, q, func(rows pgx.Rows) error {
+		var si rules.SectionInfo
+		var code string
+		var t termRef
+		if err := rows.Scan(&si.SectionID, &si.CourseID, &si.ECTS, &code, &t.id, &t.open); err != nil {
+			return err
+		}
+		if len(cands) > 0 && t.id != term.id {
+			return ErrMixedTerms
+		}
+		term = t
+		cands = append(cands, si)
+		codes[si.CourseID] = code
+		return nil
+	}, `SELECT s.id, s.course_id, c.ects, c.code, s.term_id, t.registration_open
+	      FROM sections s JOIN courses c ON c.id = s.course_id JOIN terms t ON t.id = s.term_id
+	     WHERE s.id = ANY($1)`, ids)
+	if err != nil {
+		return nil, term, err
+	}
+	if len(cands) != len(ids) {
+		return nil, term, ErrSectionNotFound
+	}
+	return cands, term, nil
+}
+
+// loadCurrent öğrencinin bu dönemdeki aktif ve bekleyen şubelerini okur.
+func loadCurrent(ctx context.Context, q querier, studentID, termID int64, codes map[int64]string) ([]rules.SectionInfo, error) {
+	var current []rules.SectionInfo
+	err := db.Each(ctx, q, func(rows pgx.Rows) error {
+		var si rules.SectionInfo
+		var code string
+		if err := rows.Scan(&si.SectionID, &si.CourseID, &si.ECTS, &code); err != nil {
+			return err
+		}
+		current = append(current, si)
+		codes[si.CourseID] = code
+		return nil
+	}, `SELECT s.id, s.course_id, c.ects, c.code
+	      FROM enrollments e JOIN sections s ON s.id = e.section_id JOIN courses c ON c.id = s.course_id
+	     WHERE e.student_id = $1 AND e.status IN ('enrolled', 'waitlisted') AND s.term_id = $2`, studentID, termID)
+	return current, err
+}
+
+// attachMeetings aday ve mevcut şubelerin ders saatlerini tek sorguyla okuyup yerlerine yazar.
+func attachMeetings(ctx context.Context, q querier, groups ...[]rules.SectionInfo) error {
+	var ids []int64
+	for _, g := range groups {
+		for _, s := range g {
+			ids = append(ids, s.SectionID)
+		}
+	}
+	meetings := map[int64][]rules.Meeting{}
+	err := db.Each(ctx, q, func(rows pgx.Rows) error {
+		var sid int64
+		var m rules.Meeting
+		if err := rows.Scan(&sid, &m.Day, &m.StartMin, &m.EndMin); err != nil {
+			return err
+		}
+		meetings[sid] = append(meetings[sid], m)
+		return nil
+	}, `SELECT section_id, day, start_min, end_min FROM section_meetings WHERE section_id = ANY($1)`, ids)
+	if err != nil {
+		return err
+	}
+	for _, g := range groups {
+		for i := range g {
+			g[i].Meetings = meetings[g[i].SectionID]
+		}
+	}
+	return nil
+}
+
+// loadPassed öğrencinin geçtiği dersleri döner. Denklik: Y geçildiyse "X yerine Y sayılır" kaydı olan X de geçilmiş sayılır.
+func loadPassed(ctx context.Context, q querier, studentID int64) (map[int64]bool, error) {
+	passed := map[int64]bool{}
+	err := db.Each(ctx, q, func(rows pgx.Rows) error {
+		var cid int64
+		if err := rows.Scan(&cid); err != nil {
+			return err
+		}
+		passed[cid] = true
+		return nil
+	}, `SELECT course_id FROM course_results WHERE student_id = $1 AND passed`, studentID)
+	if err != nil || len(passed) == 0 {
+		return passed, err
+	}
+	passedIDs := make([]int64, 0, len(passed))
+	for id := range passed {
+		passedIDs = append(passedIDs, id)
+	}
+	eq := rules.Equivalences{}
+	err = db.Each(ctx, q, func(rows pgx.Rows) error {
+		var course, sub int64
+		if err := rows.Scan(&course, &sub); err != nil {
+			return err
+		}
+		eq[course] = append(eq[course], sub)
+		return nil
+	}, `SELECT course_id, substitute_course_id FROM course_equivalences WHERE substitute_course_id = ANY($1)`, passedIDs)
+	if err != nil {
+		return nil, err
+	}
+	return rules.ExpandPassed(passed, eq), nil
+}
+
+// loadPrereqs adayların ön koşul ifadelerini okur; ifadelerde geçen dersleri codes'a (boş kodla) ekler.
+func loadPrereqs(ctx context.Context, q querier, cands []rules.SectionInfo, codes map[int64]string) (map[int64]rules.Node, error) {
+	courseIDs := make([]int64, 0, len(cands))
 	for _, c := range cands {
-		candCourses = append(candCourses, c.CourseID)
+		courseIDs = append(courseIDs, c.CourseID)
 	}
 	prereqs := map[int64]rules.Node{}
-	rows, err = q.Query(ctx, `SELECT course_id, expr FROM course_prerequisites WHERE course_id = ANY($1)`, candCourses)
-	if err != nil {
-		return out, err
-	}
-	for rows.Next() {
+	err := db.Each(ctx, q, func(rows pgx.Rows) error {
 		var cid int64
 		var raw []byte
 		if err := rows.Scan(&cid, &raw); err != nil {
-			rows.Close()
-			return out, err
+			return err
 		}
 		var n rules.Node
 		if err := json.Unmarshal(raw, &n); err != nil {
-			rows.Close()
-			return out, err
+			return err
 		}
 		prereqs[cid] = n
 		for _, id := range n.Courses() {
@@ -209,39 +210,29 @@ func loadInput(ctx context.Context, q querier, studentID int64, candidateIDs []i
 				codes[id] = ""
 			}
 		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return out, err
-	}
+		return nil
+	}, `SELECT course_id, expr FROM course_prerequisites WHERE course_id = ANY($1)`, courseIDs)
+	return prereqs, err
+}
+
+// fillCourseCodes kodu henüz bilinmeyen (yalnızca ön koşul ifadesinde geçen) derslerin kodlarını okur.
+func fillCourseCodes(ctx context.Context, q querier, codes map[int64]string) error {
 	var missing []int64
 	for id, c := range codes {
 		if c == "" {
 			missing = append(missing, id)
 		}
 	}
-	if len(missing) > 0 {
-		rows, err = q.Query(ctx, `SELECT id, code FROM courses WHERE id = ANY($1)`, missing)
-		if err != nil {
-			return out, err
-		}
-		for rows.Next() {
-			var id int64
-			var code string
-			if err := rows.Scan(&id, &code); err != nil {
-				rows.Close()
-				return out, err
-			}
-			codes[id] = code
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return out, err
-		}
+	if len(missing) == 0 {
+		return nil
 	}
-
-	out.Input = rules.Input{
-		Current: current, Candidates: cands, Passed: passed, GANO: gano, Prereqs: prereqs, CourseCodes: codes,
-	}
-	return out, nil
+	return db.Each(ctx, q, func(rows pgx.Rows) error {
+		var id int64
+		var code string
+		if err := rows.Scan(&id, &code); err != nil {
+			return err
+		}
+		codes[id] = code
+		return nil
+	}, `SELECT id, code FROM courses WHERE id = ANY($1)`, missing)
 }

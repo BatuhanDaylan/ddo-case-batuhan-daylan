@@ -11,6 +11,7 @@ import (
 
 	"github.com/batuhan-daylan/uninet/internal/audit"
 	"github.com/batuhan-daylan/uninet/internal/auth"
+	"github.com/batuhan-daylan/uninet/internal/db"
 	"github.com/batuhan-daylan/uninet/internal/httpx"
 	"github.com/batuhan-daylan/uninet/internal/scheduler"
 )
@@ -19,108 +20,26 @@ import (
 // Şube yoksa pgx.ErrNoRows döner.
 func (h *Handler) buildProblem(ctx context.Context, termID int64, req solveRequest) (scheduler.Problem, map[string]sectionInfo, error) {
 	prob := scheduler.Problem{Config: scheduler.Config{Days: req.Days, SlotsPerDay: req.SlotsPerDay}}
-	sections := map[string]sectionInfo{}
 
-	// Zorunlu derslerin yarıyıl grupları: aynı müfredat sürümü + yarıyıl = öğrenci aynı anda alır, çakışamaz.
-	groups := map[int64][]string{}
-	grows, err := h.pool.Query(ctx,
-		`SELECT course_id, curriculum_version_id, semester FROM curriculum_courses WHERE kind = 'required'`)
+	groups, err := loadSemesterGroups(ctx, h.pool)
 	if err != nil {
 		return prob, nil, err
 	}
-	for grows.Next() {
-		var cid, vid int64
-		var sem int
-		if err := grows.Scan(&cid, &vid, &sem); err != nil {
-			grows.Close()
-			return prob, nil, err
-		}
-		groups[cid] = append(groups[cid], fmt.Sprintf("v%d-yariyil%d", vid, sem))
-	}
-	grows.Close()
-	if err := grows.Err(); err != nil {
-		return prob, nil, err
-	}
-
-	rows, err := h.pool.Query(ctx,
-		`SELECT s.id, s.course_id, c.code, s.instructor_id, s.capacity, c.weekly_hours, c.room_kind
-		   FROM sections s JOIN courses c ON c.id = s.course_id WHERE s.term_id = $1 ORDER BY s.id`, termID)
+	events, sections, instructors, err := loadEvents(ctx, h.pool, termID, req.SlotsPerDay, groups)
 	if err != nil {
 		return prob, nil, err
 	}
-	instructors := []int64{}
-	seenInstr := map[int64]bool{}
-	for rows.Next() {
-		var sid, cid int64
-		var code, kind string
-		var instr *int64
-		var capacity, hours int
-		if err := rows.Scan(&sid, &cid, &code, &instr, &capacity, &hours, &kind); err != nil {
-			rows.Close()
-			return prob, nil, err
-		}
-		ev := scheduler.Event{
-			ID: "S" + strconv.FormatInt(sid, 10), Name: code, Students: capacity, Kind: kind,
-			Duration: min(hours, req.SlotsPerDay), Groups: groups[cid],
-		}
-		if instr != nil {
-			ev.Instructor = "U" + strconv.FormatInt(*instr, 10)
-			if !seenInstr[*instr] {
-				seenInstr[*instr] = true
-				instructors = append(instructors, *instr)
-			}
-		}
-		prob.Events = append(prob.Events, ev)
-		sections[ev.ID] = sectionInfo{id: sid, code: code}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return prob, nil, err
-	}
-	if len(prob.Events) == 0 {
+	if len(events) == 0 {
 		return prob, nil, pgx.ErrNoRows
 	}
-
-	rrows, err := h.pool.Query(ctx, `SELECT code, capacity, kind FROM rooms ORDER BY id`)
-	if err != nil {
+	prob.Events = events
+	if prob.Rooms, err = loadRooms(ctx, h.pool); err != nil {
 		return prob, nil, err
 	}
-	for rrows.Next() {
-		var rm scheduler.Room
-		var code string
-		if err := rrows.Scan(&code, &rm.Capacity, &rm.Kind); err != nil {
-			rrows.Close()
-			return prob, nil, err
-		}
-		rm.ID = "R:" + code
-		prob.Rooms = append(prob.Rooms, rm)
-	}
-	rrows.Close()
-	if err := rrows.Err(); err != nil {
-		return prob, nil, err
-	}
-
 	// Müsaitlikler önce bir haritaya toplanır; öğretim üyeleri sonra oluşturulur. (Dilim elemanlarına
 	// işaretçi tutmak, dilim büyüyünce eski diziye işaret eder ve müsaitlik sessizce kaybolur.)
-	unavailable := map[int64][]int{}
-	urows, err := h.pool.Query(ctx,
-		`SELECT user_id, day, slot FROM instructor_unavailable WHERE user_id = ANY($1)`, instructors)
+	unavailable, err := loadUnavailability(ctx, h.pool, instructors, req)
 	if err != nil {
-		return prob, nil, err
-	}
-	for urows.Next() {
-		var uid int64
-		var day, slot int
-		if err := urows.Scan(&uid, &day, &slot); err != nil {
-			urows.Close()
-			return prob, nil, err
-		}
-		if day <= req.Days && slot < req.SlotsPerDay { // ızgara dışındaki saatler zaten kullanılmaz
-			unavailable[uid] = append(unavailable[uid], (day-1)*req.SlotsPerDay+slot)
-		}
-	}
-	urows.Close()
-	if err := urows.Err(); err != nil {
 		return prob, nil, err
 	}
 	for _, id := range instructors {
@@ -129,6 +48,89 @@ func (h *Handler) buildProblem(ctx context.Context, termID int64, req solveReque
 		})
 	}
 	return prob, sections, nil
+}
+
+// loadSemesterGroups zorunlu derslerin yarıyıl gruplarını döner (ders → grup adları): aynı müfredat sürümü +
+// yarıyıl = öğrenci aynı anda alır, çakışamaz.
+func loadSemesterGroups(ctx context.Context, q db.Querier) (map[int64][]string, error) {
+	groups := map[int64][]string{}
+	err := db.Each(ctx, q, func(rows pgx.Rows) error {
+		var cid, vid int64
+		var sem int
+		if err := rows.Scan(&cid, &vid, &sem); err != nil {
+			return err
+		}
+		groups[cid] = append(groups[cid], fmt.Sprintf("v%d-yariyil%d", vid, sem))
+		return nil
+	}, `SELECT course_id, curriculum_version_id, semester FROM curriculum_courses WHERE kind = 'required'`)
+	return groups, err
+}
+
+// loadEvents dönemin şubelerini çözücü etkinliklerine çevirir. Etkinlik kimliği "S<şube>"; öğretim üyeleri
+// ilk görülme sırasıyla ayrıca döner.
+func loadEvents(ctx context.Context, q db.Querier, termID int64, slotsPerDay int, groups map[int64][]string) ([]scheduler.Event, map[string]sectionInfo, []int64, error) {
+	var events []scheduler.Event
+	sections := map[string]sectionInfo{}
+	instructors := []int64{}
+	seen := map[int64]bool{}
+	err := db.Each(ctx, q, func(rows pgx.Rows) error {
+		var sid, cid int64
+		var code, kind string
+		var instr *int64
+		var capacity, hours int
+		if err := rows.Scan(&sid, &cid, &code, &instr, &capacity, &hours, &kind); err != nil {
+			return err
+		}
+		ev := scheduler.Event{
+			ID: "S" + strconv.FormatInt(sid, 10), Name: code, Students: capacity, Kind: kind,
+			Duration: min(hours, slotsPerDay), Groups: groups[cid],
+		}
+		if instr != nil {
+			ev.Instructor = "U" + strconv.FormatInt(*instr, 10)
+			if !seen[*instr] {
+				seen[*instr] = true
+				instructors = append(instructors, *instr)
+			}
+		}
+		events = append(events, ev)
+		sections[ev.ID] = sectionInfo{id: sid, code: code}
+		return nil
+	}, `SELECT s.id, s.course_id, c.code, s.instructor_id, s.capacity, c.weekly_hours, c.room_kind
+	      FROM sections s JOIN courses c ON c.id = s.course_id WHERE s.term_id = $1 ORDER BY s.id`, termID)
+	return events, sections, instructors, err
+}
+
+// loadRooms derslikleri çözücü biçiminde döner (kimlik "R:<kod>").
+func loadRooms(ctx context.Context, q db.Querier) ([]scheduler.Room, error) {
+	var rooms []scheduler.Room
+	err := db.Each(ctx, q, func(rows pgx.Rows) error {
+		var rm scheduler.Room
+		var code string
+		if err := rows.Scan(&code, &rm.Capacity, &rm.Kind); err != nil {
+			return err
+		}
+		rm.ID = "R:" + code
+		rooms = append(rooms, rm)
+		return nil
+	}, `SELECT code, capacity, kind FROM rooms ORDER BY id`)
+	return rooms, err
+}
+
+// loadUnavailability öğretim üyelerinin müsait olmadığı saatleri döner (kullanıcı → gün*SlotsPerDay + saat).
+func loadUnavailability(ctx context.Context, q db.Querier, instructors []int64, req solveRequest) (map[int64][]int, error) {
+	unavailable := map[int64][]int{}
+	err := db.Each(ctx, q, func(rows pgx.Rows) error {
+		var uid int64
+		var day, slot int
+		if err := rows.Scan(&uid, &day, &slot); err != nil {
+			return err
+		}
+		if day <= req.Days && slot < req.SlotsPerDay { // ızgara dışındaki saatler zaten kullanılmaz
+			unavailable[uid] = append(unavailable[uid], (day-1)*req.SlotsPerDay+slot)
+		}
+		return nil
+	}, `SELECT user_id, day, slot FROM instructor_unavailable WHERE user_id = ANY($1)`, instructors)
+	return unavailable, err
 }
 
 // apply programı section_meetings'e yazar: dönemin mevcut oturumları yenisiyle değiştirilir.

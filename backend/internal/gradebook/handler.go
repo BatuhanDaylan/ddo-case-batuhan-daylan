@@ -15,6 +15,7 @@ import (
 	"github.com/batuhan-daylan/uninet/internal/access"
 	"github.com/batuhan-daylan/uninet/internal/audit"
 	"github.com/batuhan-daylan/uninet/internal/auth"
+	"github.com/batuhan-daylan/uninet/internal/db"
 	"github.com/batuhan-daylan/uninet/internal/grading"
 	"github.com/batuhan-daylan/uninet/internal/httpx"
 )
@@ -296,100 +297,38 @@ func (h *Handler) publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	weights := map[string]int{}
-	rows, err := tx.Query(ctx, `SELECT name, weight FROM grade_components WHERE section_id = $1`, sectionID)
+	weights, err := loadWeights(ctx, tx, sectionID)
 	if err != nil {
 		httpx.Internal(w, err)
 		return
 	}
-	for rows.Next() {
-		var n string
-		var wt int
-		if err := rows.Scan(&n, &wt); err != nil {
-			rows.Close()
-			httpx.Internal(w, err)
-			return
-		}
-		weights[n] = wt
-	}
-	rows.Close()
 	if len(weights) == 0 {
 		httpx.Error(w, http.StatusConflict, "components_missing", "önce not bileşenlerini tanımlayın")
 		return
 	}
-
-	type enr struct{ id, student int64 }
-	var enrolled []enr
-	rows, err = tx.Query(ctx, `SELECT id, student_id FROM enrollments WHERE section_id = $1 AND status = 'enrolled' ORDER BY id`, sectionID)
+	enrolled, err := loadEnrolled(ctx, tx, sectionID)
 	if err != nil {
 		httpx.Internal(w, err)
 		return
 	}
-	for rows.Next() {
-		var e enr
-		if err := rows.Scan(&e.id, &e.student); err != nil {
-			rows.Close()
-			httpx.Internal(w, err)
-			return
-		}
-		enrolled = append(enrolled, e)
-	}
-	rows.Close()
-
-	byEnr := map[int64]map[string]map[string]float64{}
-	rows, err = tx.Query(ctx,
-		`SELECT cs.enrollment_id, cs.component, cs.kind, cs.score::float8 FROM component_scores cs
-		   JOIN enrollments e ON e.id = cs.enrollment_id WHERE e.section_id = $1`, sectionID)
+	scores, err := loadScores(ctx, tx, sectionID)
 	if err != nil {
 		httpx.Internal(w, err)
 		return
 	}
-	for rows.Next() {
-		var id int64
-		var comp, kind string
-		var score float64
-		if err := rows.Scan(&id, &comp, &kind, &score); err != nil {
-			rows.Close()
-			httpx.Internal(w, err)
-			return
-		}
-		if byEnr[id] == nil {
-			byEnr[id] = map[string]map[string]float64{}
-		}
-		if byEnr[id][comp] == nil {
-			byEnr[id][comp] = map[string]float64{}
-		}
-		byEnr[id][comp][kind] = score
-	}
-	rows.Close()
 
 	totals := make([]float64, len(enrolled))
 	for i, e := range enrolled {
-		totals[i] = grading.Total(weights, grading.Effective(byEnr[e.id]))
+		totals[i] = grading.Total(weights, grading.Effective(scores[e.id]))
 	}
 	letters := grading.Letters(method, totals)
 
-	var termID, courseID int64
-	if err := tx.QueryRow(ctx, `SELECT term_id, course_id FROM sections WHERE id = $1`, sectionID).Scan(&termID, &courseID); err != nil {
-		httpx.Internal(w, err)
-		return
-	}
-	out := make([]publishedRow, 0, len(enrolled))
-	students := make([]int64, 0, len(enrolled))
-	for i, e := range enrolled {
-		point, _ := grading.PointOf(letters[i])
-		var resultID int64
-		if err := tx.QueryRow(ctx,
-			`INSERT INTO course_results (student_id, course_id, term_id, letter, grade_point, passed, enrollment_id)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-			e.student, courseID, termID, letters[i], point, grading.Passed(letters[i]), e.id).Scan(&resultID); err != nil {
-			if !httpx.DBError(w, err) {
-				httpx.Internal(w, err)
-			}
-			return
+	out, students, err := insertResults(ctx, tx, sectionID, enrolled, totals, letters)
+	if err != nil {
+		if !httpx.DBError(w, err) {
+			httpx.Internal(w, err)
 		}
-		out = append(out, publishedRow{resultID, e.id, e.student, totals[i], letters[i]})
-		students = append(students, e.student)
+		return
 	}
 
 	if _, err := tx.Exec(ctx, `UPDATE sections SET published_at = now() WHERE id = $1`, sectionID); err != nil {
@@ -411,6 +350,84 @@ func (h *Handler) publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"method": method, "results": out})
+}
+
+// enrollee ilan edilecek şubedeki kayıtlı bir öğrencidir.
+type enrollee struct{ id, student int64 }
+
+// loadWeights şubenin not bileşenlerinin ağırlıklarını döner (bileşen adı → ağırlık).
+func loadWeights(ctx context.Context, q db.Querier, sectionID int64) (map[string]int, error) {
+	weights := map[string]int{}
+	err := db.Each(ctx, q, func(rows pgx.Rows) error {
+		var name string
+		var weight int
+		if err := rows.Scan(&name, &weight); err != nil {
+			return err
+		}
+		weights[name] = weight
+		return nil
+	}, `SELECT name, weight FROM grade_components WHERE section_id = $1`, sectionID)
+	return weights, err
+}
+
+// loadEnrolled şubenin kayıtlı (bekleme listesi değil) öğrencilerini kayıt sırasıyla döner.
+func loadEnrolled(ctx context.Context, q db.Querier, sectionID int64) ([]enrollee, error) {
+	var out []enrollee
+	err := db.Each(ctx, q, func(rows pgx.Rows) error {
+		var e enrollee
+		if err := rows.Scan(&e.id, &e.student); err != nil {
+			return err
+		}
+		out = append(out, e)
+		return nil
+	}, `SELECT id, student_id FROM enrollments WHERE section_id = $1 AND status = 'enrolled' ORDER BY id`, sectionID)
+	return out, err
+}
+
+// loadScores şubenin girilmiş puanlarını döner: kayıt → bileşen → tür (ör. "normal"/"makeup") → puan.
+func loadScores(ctx context.Context, q db.Querier, sectionID int64) (map[int64]map[string]map[string]float64, error) {
+	byEnr := map[int64]map[string]map[string]float64{}
+	err := db.Each(ctx, q, func(rows pgx.Rows) error {
+		var id int64
+		var comp, kind string
+		var score float64
+		if err := rows.Scan(&id, &comp, &kind, &score); err != nil {
+			return err
+		}
+		if byEnr[id] == nil {
+			byEnr[id] = map[string]map[string]float64{}
+		}
+		if byEnr[id][comp] == nil {
+			byEnr[id][comp] = map[string]float64{}
+		}
+		byEnr[id][comp][kind] = score
+		return nil
+	}, `SELECT cs.enrollment_id, cs.component, cs.kind, cs.score::float8 FROM component_scores cs
+	      JOIN enrollments e ON e.id = cs.enrollment_id WHERE e.section_id = $1`, sectionID)
+	return byEnr, err
+}
+
+// insertResults hesaplanan harf notlarını course_results'a yazar; yazılan satırları ve etkilenen öğrencileri döner.
+func insertResults(ctx context.Context, tx pgx.Tx, sectionID int64, enrolled []enrollee, totals []float64, letters []string) ([]publishedRow, []int64, error) {
+	var termID, courseID int64
+	if err := tx.QueryRow(ctx, `SELECT term_id, course_id FROM sections WHERE id = $1`, sectionID).Scan(&termID, &courseID); err != nil {
+		return nil, nil, err
+	}
+	out := make([]publishedRow, 0, len(enrolled))
+	students := make([]int64, 0, len(enrolled))
+	for i, e := range enrolled {
+		point, _ := grading.PointOf(letters[i])
+		var resultID int64
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO course_results (student_id, course_id, term_id, letter, grade_point, passed, enrollment_id)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+			e.student, courseID, termID, letters[i], point, grading.Passed(letters[i]), e.id).Scan(&resultID); err != nil {
+			return nil, nil, err
+		}
+		out = append(out, publishedRow{resultID, e.id, e.student, totals[i], letters[i]})
+		students = append(students, e.student)
+	}
+	return out, students, nil
 }
 
 // sectionResults şubenin ilan edilmiş sonuçlarını döner. Öğretim üyesi yalnızca kendi şubesini görür.

@@ -16,6 +16,7 @@ import (
 	"github.com/batuhan-daylan/uninet/internal/access"
 	"github.com/batuhan-daylan/uninet/internal/audit"
 	"github.com/batuhan-daylan/uninet/internal/auth"
+	"github.com/batuhan-daylan/uninet/internal/db"
 	"github.com/batuhan-daylan/uninet/internal/gradebook"
 	"github.com/batuhan-daylan/uninet/internal/httpx"
 	"github.com/batuhan-daylan/uninet/internal/rules"
@@ -191,94 +192,28 @@ func (h *Handler) audit(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) buildInput(ctx context.Context, studentID, versionID int64, rl Rules) (Input, map[string]remainingCourse, error) {
 	in := Input{Rules: rl, Passed: map[string]int{}}
 
-	rows, err := h.pool.Query(ctx,
-		`SELECT DISTINCT cr.course_id FROM course_results cr WHERE cr.student_id = $1 AND cr.passed`, studentID)
+	actual, expanded, err := loadPassedCourses(ctx, h.pool, studentID)
 	if err != nil {
 		return in, nil, err
 	}
-	actual := map[int64]bool{}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return in, nil, err
-		}
-		actual[id] = true
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return in, nil, err
-	}
-
-	eq := rules.Equivalences{}
-	erows, err := h.pool.Query(ctx, `SELECT course_id, substitute_course_id FROM course_equivalences`)
-	if err != nil {
-		return in, nil, err
-	}
-	for erows.Next() {
-		var c, s int64
-		if err := erows.Scan(&c, &s); err != nil {
-			erows.Close()
-			return in, nil, err
-		}
-		eq[c] = append(eq[c], s)
-	}
-	erows.Close()
-	if err := erows.Err(); err != nil {
-		return in, nil, err
-	}
-	expanded := rules.ExpandPassed(actual, eq)
-
-	ids := make([]int64, 0, len(expanded))
-	for id := range expanded {
-		ids = append(ids, id)
-	}
-	crows, err := h.pool.Query(ctx, `SELECT id, code, ects FROM courses WHERE id = ANY($1)`, ids)
-	if err != nil {
-		return in, nil, err
-	}
-	for crows.Next() {
+	if err := db.Each(ctx, h.pool, func(rows pgx.Rows) error {
 		var id int64
 		var code string
 		var ects int
-		if err := crows.Scan(&id, &code, &ects); err != nil {
-			crows.Close()
-			return in, nil, err
+		if err := rows.Scan(&id, &code, &ects); err != nil {
+			return err
 		}
 		in.Passed[code] = ects
 		if actual[id] { // toplam AKTS'ye yalnızca gerçekten başarılan dersler girer (denklik çift saymaz)
 			in.TotalECTS += ects
 		}
-	}
-	crows.Close()
-	if err := crows.Err(); err != nil {
+		return nil
+	}, `SELECT id, code, ects FROM courses WHERE id = ANY($1)`, keys(expanded)); err != nil {
 		return in, nil, err
 	}
 
-	// Müfredat dersleri: zorunluluğun kaynağı ve kalan ders ayrıntıları.
-	remaining := map[string]remainingCourse{}
-	var currRequired []string
-	mrows, err := h.pool.Query(ctx,
-		`SELECT c.code, c.name, c.ects, cc.semester, cc.kind
-		   FROM curriculum_courses cc JOIN courses c ON c.id = cc.course_id
-		  WHERE cc.curriculum_version_id = $1 ORDER BY cc.semester, c.code`, versionID)
+	remaining, currRequired, err := loadCurriculumCourses(ctx, h.pool, versionID)
 	if err != nil {
-		return in, nil, err
-	}
-	for mrows.Next() {
-		var rc remainingCourse
-		var kind string
-		if err := mrows.Scan(&rc.Code, &rc.Name, &rc.ECTS, &rc.Semester, &kind); err != nil {
-			mrows.Close()
-			return in, nil, err
-		}
-		remaining[rc.Code] = rc
-		if kind == "required" {
-			currRequired = append(currRequired, rc.Code)
-		}
-	}
-	mrows.Close()
-	if err := mrows.Err(); err != nil {
 		return in, nil, err
 	}
 	in.Required = rl.Required
@@ -295,13 +230,67 @@ func (h *Handler) buildInput(ctx context.Context, studentID, versionID int64, rl
 		}
 	}
 
-	g, err := gradebook.LoadGANO(ctx, h.pool, studentID)
-	if err != nil {
+	if in.GANO, err = gradebook.LoadGANO(ctx, h.pool, studentID); err != nil {
 		return in, nil, err
 	}
-	in.GANO = g
 	slices.Sort(in.Required)
 	return in, remaining, nil
+}
+
+// loadPassedCourses öğrencinin gerçekten geçtiği dersleri (actual) ve denklik/muafiyet genişletmesini (expanded) döner.
+func loadPassedCourses(ctx context.Context, q db.Querier, studentID int64) (actual, expanded map[int64]bool, err error) {
+	actual = map[int64]bool{}
+	if err = db.Each(ctx, q, func(rows pgx.Rows) error {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		actual[id] = true
+		return nil
+	}, `SELECT DISTINCT cr.course_id FROM course_results cr WHERE cr.student_id = $1 AND cr.passed`, studentID); err != nil {
+		return nil, nil, err
+	}
+	eq := rules.Equivalences{}
+	if err = db.Each(ctx, q, func(rows pgx.Rows) error {
+		var c, s int64
+		if err := rows.Scan(&c, &s); err != nil {
+			return err
+		}
+		eq[c] = append(eq[c], s)
+		return nil
+	}, `SELECT course_id, substitute_course_id FROM course_equivalences`); err != nil {
+		return nil, nil, err
+	}
+	return actual, rules.ExpandPassed(actual, eq), nil
+}
+
+// loadCurriculumCourses müfredat sürümünün derslerini ("kalan dersler" ayrıntısı) ve zorunlu ders kodlarını döner.
+func loadCurriculumCourses(ctx context.Context, q db.Querier, versionID int64) (map[string]remainingCourse, []string, error) {
+	remaining := map[string]remainingCourse{}
+	var required []string
+	err := db.Each(ctx, q, func(rows pgx.Rows) error {
+		var rc remainingCourse
+		var kind string
+		if err := rows.Scan(&rc.Code, &rc.Name, &rc.ECTS, &rc.Semester, &kind); err != nil {
+			return err
+		}
+		remaining[rc.Code] = rc
+		if kind == "required" {
+			required = append(required, rc.Code)
+		}
+		return nil
+	}, `SELECT c.code, c.name, c.ects, cc.semester, cc.kind
+	      FROM curriculum_courses cc JOIN courses c ON c.id = cc.course_id
+	     WHERE cc.curriculum_version_id = $1 ORDER BY cc.semester, c.code`, versionID)
+	return remaining, required, err
+}
+
+func keys(set map[int64]bool) []int64 {
+	out := make([]int64, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	return out
 }
 
 // SeedDemo her müfredat sürümüne örnek bir mezuniyet kuralı ekler (yoksa). İdempotenttir.
