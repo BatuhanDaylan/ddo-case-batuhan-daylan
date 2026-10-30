@@ -2,6 +2,7 @@
 # Kaos betikleri için ortak yardımcılar (POSIX sh; Linux, macOS ve Windows Git Bash'te çalışır).
 # Gereksinim: ayakta bir `docker compose up -d` ortamı ve curl.
 set -eu
+export MSYS_NO_PATHCONV=1   # Windows Git Bash yol dönüşümünü kapatır (Linux/macOS’ta etkisiz)
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
