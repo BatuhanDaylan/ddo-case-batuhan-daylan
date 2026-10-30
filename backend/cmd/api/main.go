@@ -158,6 +158,7 @@ func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler,
 		reg.ApprovalRoutes(r)
 		gb.Routes(r)
 		gb.ObjectionRoutes(r)
+		gb.RosterRoutes(r)
 		docs.Routes(r)
 		grad.Routes(r)
 		tt.Routes(r)

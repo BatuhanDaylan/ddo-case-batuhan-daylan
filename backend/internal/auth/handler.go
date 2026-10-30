@@ -213,9 +213,15 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusNotFound, "not_found", "kullanıcı bulunamadı")
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"id": u.ID, "email": u.Email, "full_name": u.FullName, "role": u.Role,
-	})
+	out := map[string]any{"id": u.ID, "email": u.Email, "full_name": u.FullName, "role": u.Role}
+	if u.Role == RoleStudent {
+		// Arayüz öğrenci kimliğini (students.id) bilmelidir: sonuç/transkript uç noktaları onunla çağrılır.
+		var sid int64
+		if err := h.pool.QueryRow(r.Context(), `SELECT id FROM students WHERE user_id = $1`, u.ID).Scan(&sid); err == nil {
+			out["student_id"] = sid
+		}
+	}
+	httpx.JSON(w, http.StatusOK, out)
 }
 
 // issue yeni access + refresh çifti üretir ve refresh özetini kaydeder.

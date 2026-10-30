@@ -1,0 +1,535 @@
+# UniNet — elle deneme koleksiyonu (VS Code "REST Client" eklentisi)
+# Önce sistemi başlatın:  docker compose up --build -d
+# Sırayla çalıştırın: ilk bölümde her rol için giriş yapılır, token'lar sonraki isteklerde otomatik kullanılır.
+# Tüm demo hesapların parolası: Demo1234!
+
+@base = http://localhost:8080
+@pw = Demo1234!
+
+# =====================================================================================
+# 0. SAĞLIK, METRİK, OPENAPI
+# =====================================================================================
+
+### Sağlık (veritabanı bağlantısı dahil)
+GET {{base}}/health
+
+### Prometheus metrikleri
+GET {{base}}/metrics
+
+### OpenAPI belgesi
+GET {{base}}/openapi.yaml
+
+# =====================================================================================
+# 1. KİMLİK DOĞRULAMA — her rol için giriş
+# =====================================================================================
+
+### Öğrenci girişi
+# @name loginStudent
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email": "ogrenci@uninet.test", "password": "{{pw}}"}
+
+###
+@stu = {{loginStudent.response.body.access_token}}
+@stuRefresh = {{loginStudent.response.body.refresh_token}}
+
+### Öğretim üyesi girişi
+# @name loginInstructor
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email": "hoca@uninet.test", "password": "{{pw}}"}
+
+###
+@ins = {{loginInstructor.response.body.access_token}}
+
+### Danışman girişi
+# @name loginAdvisor
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email": "danisman@uninet.test", "password": "{{pw}}"}
+
+###
+@adv = {{loginAdvisor.response.body.access_token}}
+
+### Bölüm sekreteri girişi
+# @name loginSecretary
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email": "sekreter@uninet.test", "password": "{{pw}}"}
+
+###
+@sec = {{loginSecretary.response.body.access_token}}
+
+### Öğrenci işleri girişi
+# @name loginRegistrar
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email": "ogrenciisleri@uninet.test", "password": "{{pw}}"}
+
+###
+@reg = {{loginRegistrar.response.body.access_token}}
+
+### Raporlama (rektörlük) girişi
+# @name loginReporting
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email": "rektorluk@uninet.test", "password": "{{pw}}"}
+
+###
+@rep = {{loginReporting.response.body.access_token}}
+
+### Yanlış parola → 401 invalid_credentials
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email": "ogrenci@uninet.test", "password": "yanlis"}
+
+### Oturumdaki kullanıcı
+GET {{base}}/me
+Authorization: Bearer {{stu}}
+
+### Token'sız erişim → 401
+GET {{base}}/me
+
+### Refresh token ile yeni çift (eski refresh bir daha KULLANILAMAZ: yeniden kullanım tüm oturumları kapatır)
+POST {{base}}/auth/refresh
+Content-Type: application/json
+
+{"refresh_token": "{{stuRefresh}}"}
+
+### Çıkış
+POST {{base}}/auth/logout
+Content-Type: application/json
+
+{"refresh_token": "{{stuRefresh}}"}
+
+# =====================================================================================
+# 2. F-1 — AKADEMİK YAPI (öğrenci işleri / bölüm sekreteri yazar, herkes okur)
+# =====================================================================================
+
+### Fakülteler (keyset sayfalama: ?limit=1&after=<next_after>)
+GET {{base}}/faculties?limit=1
+Authorization: Bearer {{stu}}
+
+### Fakülte oluştur
+# @name newFaculty
+POST {{base}}/faculties
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"code": "HUK", "name": "Hukuk Fakültesi"}
+
+###
+@facultyId = {{newFaculty.response.body.id}}
+
+### Bölüm oluştur
+# @name newDept
+POST {{base}}/departments
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"faculty_id": {{facultyId}}, "code": "HUK-1", "name": "Özel Hukuk"}
+
+###
+@deptId = {{newDept.response.body.id}}
+
+### Bölümleri listele
+GET {{base}}/departments?faculty_id={{facultyId}}
+Authorization: Bearer {{stu}}
+
+### Program oluştur
+# @name newProgram
+POST {{base}}/programs
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"department_id": {{deptId}}, "code": "HUK-LS", "name": "Hukuk Lisans", "total_ects_required": 240}
+
+###
+@programId = {{newProgram.response.body.id}}
+
+### Ders oluştur
+# @name newCourse
+POST {{base}}/courses
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"code": "HUK101", "name": "Hukuka Giriş", "ects": 6, "department_id": {{deptId}}}
+
+###
+@courseId = {{newCourse.response.body.id}}
+
+### Dersleri listele
+GET {{base}}/courses?department_id={{deptId}}
+Authorization: Bearer {{stu}}
+
+### Müfredat sürümü oluştur (program + yürürlük yılı + dersler)
+# @name newVersion
+POST {{base}}/programs/{{programId}}/curriculum-versions
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"effective_year": 2026, "courses": [{"course_id": {{courseId}}, "semester": 1, "kind": "required"}]}
+
+###
+@versionId = {{newVersion.response.body.id}}
+
+### Müfredat sürümlerini listele
+GET {{base}}/programs/{{programId}}/curriculum-versions
+Authorization: Bearer {{stu}}
+
+### Müfredat sürümü ayrıntısı
+GET {{base}}/curriculum-versions/{{versionId}}
+Authorization: Bearer {{stu}}
+
+### Öğrenciye yetki yok → 403
+POST {{base}}/faculties
+Authorization: Bearer {{stu}}
+Content-Type: application/json
+
+{"code": "X", "name": "Y"}
+
+# =====================================================================================
+# 3. F-2 — DÖNEM, ŞUBE, DERSLİK
+# =====================================================================================
+
+### Dönemler
+GET {{base}}/terms
+Authorization: Bearer {{stu}}
+
+### Dönem oluştur
+# @name newTerm
+POST {{base}}/terms
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"code": "2027-GUZ", "name": "2027-2028 Güz", "registration_open": true}
+
+###
+@termId = {{newTerm.response.body.id}}
+
+### Kayıt dönemini kapat/aç (denetime yazılır)
+PATCH {{base}}/terms/{{termId}}
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"registration_open": true}
+
+### Ekle-sil süresini ayarla (null: sınır yok)
+PUT {{base}}/terms/{{termId}}/drop-deadline
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"deadline": "2027-10-20T23:59:00Z"}
+
+### Derslik oluştur (lecture | lab | amphi)
+POST {{base}}/rooms
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"code": "DERS-201", "capacity": 60, "kind": "lecture"}
+
+### Derslikler
+GET {{base}}/rooms
+Authorization: Bearer {{stu}}
+
+### Şube oluştur (kontenjan, öğretim üyesi)
+# @name newSection
+POST {{base}}/sections
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"term_id": {{termId}}, "course_id": {{courseId}}, "code": "01", "capacity": 40}
+
+###
+@sectionId = {{newSection.response.body.id}}
+
+### Şube ders saati ekle (gün 1=Pzt, dakika = saat*60)
+POST {{base}}/sections/{{sectionId}}/meetings
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"day": 1, "start_min": 540, "end_min": 660}
+
+### Şubeler (kontenjan, kayıtlı, bekleyen)
+GET {{base}}/sections?term_id=1
+Authorization: Bearer {{stu}}
+
+### Şube ayrıntısı
+GET {{base}}/sections/1
+Authorization: Bearer {{stu}}
+
+### Öğretim üyesi müsait olmadığı saatleri bildirir (gün 1-7, slot 0'dan)
+PUT {{base}}/instructors/2/unavailability
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"slots": [{"day": 5, "slot": 6}, {"day": 5, "slot": 7}]}
+
+# =====================================================================================
+# 4. F-3 / T-1 / T-2 — DERS KAYDI
+# =====================================================================================
+
+### Kuralları denetle: ihlallerin HEPSİ birlikte listelenir (ön koşul, çakışma, tekrar, AKTS)
+POST {{base}}/me/enrollments/validate
+Authorization: Bearer {{stu}}
+Content-Type: application/json
+
+{"section_ids": [2, 1]}
+
+### Kayıt ol (Idempotency-Key ZORUNLU; aynı anahtar aynı yanıtı döner)
+POST {{base}}/sections/1/enrollments
+Authorization: Bearer {{stu}}
+Idempotency-Key: deneme-001
+
+### Aynı anahtarla tekrar → aynı yanıt + Idempotent-Replayed: true
+POST {{base}}/sections/1/enrollments
+Authorization: Bearer {{stu}}
+Idempotency-Key: deneme-001
+
+### Kayıtlarım
+GET {{base}}/me/enrollments
+Authorization: Bearer {{stu}}
+
+### Kaydı bırak (boşalan koltuk bekleme listesinin ilk kişisine otomatik atanır)
+DELETE {{base}}/enrollments/1
+Authorization: Bearer {{stu}}
+
+### Danışman: bekleyen onaylar
+GET {{base}}/advisor/enrollments?status=pending
+Authorization: Bearer {{adv}}
+
+### Danışman: onayla / reddet (ret koltuğu bekleyene aktarır)
+POST {{base}}/enrollments/1/advisor-decision
+Authorization: Bearer {{adv}}
+Content-Type: application/json
+
+{"approve": true}
+
+# =====================================================================================
+# 5. T-2 — ÖN KOŞUL (A ve (B veya C)), DÖNGÜ REDDİ
+# =====================================================================================
+
+### Ön koşul oku
+GET {{base}}/courses/1/prerequisites
+Authorization: Bearer {{stu}}
+
+### Ön koşul tanımla: 2 numaralı ders = 1 ve (3 veya 4). Döngü olursa 422 prerequisite_cycle.
+PUT {{base}}/courses/2/prerequisites
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"expr": {"op": "and", "args": [{"course_id": 1}, {"op": "or", "args": [{"course_id": 3}, {"course_id": 4}]}]}}
+
+### Ön koşulu kaldır
+DELETE {{base}}/courses/2/prerequisites
+Authorization: Bearer {{reg}}
+
+# =====================================================================================
+# 6. T-3 — MÜFREDAT SÜRÜMLEME, DENKLİK, MUAFİYET, ZAMAN YOLCULUĞU
+# =====================================================================================
+
+### Öğrencinin giriş yılına göre müfredatı
+GET {{base}}/students/1/curriculum
+Authorization: Bearer {{stu}}
+
+### Zaman yolculuğu: öğrencinin 2024 itibarıyla alması gereken dersler
+GET {{base}}/students/1/required-courses?as_of=2024
+Authorization: Bearer {{stu}}
+
+### Denklik: 1 numaralı ders yerine 2 numaralı ders sayılır
+POST {{base}}/course-equivalences
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"course_id": 1, "substitute_course_id": 2}
+
+### Denklikler
+GET {{base}}/course-equivalences
+Authorization: Bearer {{reg}}
+
+### Muafiyet (yalnızca öğrenci işleri; GANO'ya girmez)
+POST {{base}}/students/1/exemptions
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"course_id": 1, "term_id": 1}
+
+# =====================================================================================
+# 7. F-5 / T-4 — NOT GİRİŞİ, İLAN, DÜZELTME, İTİRAZ
+# =====================================================================================
+
+### Öğretim üyesi: bileşen ağırlıkları + yöntem (absolute | relative)
+PUT {{base}}/sections/1/grade-components
+Authorization: Bearer {{ins}}
+Content-Type: application/json
+
+{"method": "absolute", "components": [{"name": "midterm", "weight": 40}, {"name": "final", "weight": 60}]}
+
+### Öğretim üyesi: roster
+GET {{base}}/sections/1/roster
+Authorization: Bearer {{ins}}
+
+### Puan girişi (kind: regular | makeup (bütünleme) | excuse (mazeret))
+PUT {{base}}/sections/1/scores
+Authorization: Bearer {{ins}}
+Content-Type: application/json
+
+{"entries": [{"enrollment_id": 1, "component": "midterm", "kind": "regular", "score": 80}, {"enrollment_id": 1, "component": "final", "kind": "regular", "score": 70}]}
+
+### Notları ilan et (girişi kilitler, GANO işçisini tetikler)
+POST {{base}}/sections/1/grades/publish
+Authorization: Bearer {{ins}}
+
+### Şubenin ilan edilmiş sonuçları (öğretim üyesi yalnız kendi şubesini görür)
+GET {{base}}/sections/1/results
+Authorization: Bearer {{ins}}
+
+### Öğrenci: sonuçlarım + GANO (canlı ve önbellek)
+GET {{base}}/students/1/results
+Authorization: Bearer {{stu}}
+
+### Öğretim üyesi: not düzeltme talebi (ikinci kişi onaylayana kadar not DEĞİŞMEZ)
+POST {{base}}/course-results/1/corrections
+Authorization: Bearer {{ins}}
+Content-Type: application/json
+
+{"new_letter": "BB", "reason": "Maddi hata"}
+
+### Sekreter/öğrenci işleri: bekleyen düzeltmeler
+GET {{base}}/grade-corrections?status=pending
+Authorization: Bearer {{sec}}
+
+### İkinci kişi onayı (talep eden kendi talebini onaylayamaz → 403)
+POST {{base}}/grade-corrections/1/decision
+Authorization: Bearer {{sec}}
+Content-Type: application/json
+
+{"approve": true}
+
+### Öğrenci: nota itiraz
+POST {{base}}/course-results/1/objections
+Authorization: Bearer {{stu}}
+Content-Type: application/json
+
+{"reason": "Final kâğıdım yanlış değerlendirilmiş"}
+
+### Öğrenci: itirazlarım
+GET {{base}}/me/objections
+Authorization: Bearer {{stu}}
+
+### Öğretim üyesi: şubenin itirazları
+GET {{base}}/sections/1/objections
+Authorization: Bearer {{ins}}
+
+### Öğretim üyesi: itirazı karara bağla (kabul → düzeltme talebi açılır)
+POST {{base}}/grade-objections/1/decision
+Authorization: Bearer {{ins}}
+Content-Type: application/json
+
+{"accept": true, "new_letter": "BB", "response": "Toplama hatası doğrulandı"}
+
+### Tekrar-alma politikası (last | best): programdaki tüm öğrencilerin GANO'su yeniden hesaplanır
+PUT {{base}}/programs/1/retake-policy
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"policy": "best"}
+
+# =====================================================================================
+# 8. F-4 / T-5 — HAFTALIK PROGRAM VE SINAV TAKVİMİ
+# =====================================================================================
+
+### Ders programı çözücü (apply:false = yalnızca dene, true = dönemin programını değiştirir)
+POST {{base}}/terms/1/schedule/solve
+Authorization: Bearer {{sec}}
+Content-Type: application/json
+
+{"apply": false, "time_limit_seconds": 30}
+
+### Dönemin ders programı
+GET {{base}}/terms/1/schedule?limit=50
+Authorization: Bearer {{stu}}
+
+### Sınav ekle (oda/öğretim üyesi/öğrenci çakışması → 409, hepsi birlikte listelenir)
+POST {{base}}/sections/1/exams
+Authorization: Bearer {{sec}}
+Content-Type: application/json
+
+{"kind": "midterm", "starts_at": "2026-12-14T09:00:00Z", "duration_min": 90, "room": "SINIF-101"}
+
+### Dönemin sınav takvimi
+GET {{base}}/terms/1/exams
+Authorization: Bearer {{stu}}
+
+### Öğrencinin sınav takvimi
+GET {{base}}/me/exam-schedule
+Authorization: Bearer {{stu}}
+
+# =====================================================================================
+# 9. F-6 / T-7 — TRANSKRİPT, İMZALI BELGE
+# =====================================================================================
+
+### Transkript düzenle (HMAC imzalı kod + QR içeren PDF için kayıt oluşturur)
+# @name newDoc
+POST {{base}}/students/1/transcripts
+Authorization: Bearer {{stu}}
+
+###
+@docId = {{newDoc.response.body.id}}
+@docCode = {{newDoc.response.body.code}}
+
+### PDF indir
+GET {{base}}{{newDoc.response.body.pdf_url}}
+Authorization: Bearer {{stu}}
+
+### Belgeyi doğrula — KİMLİK GEREKMEZ (QR'daki adres)
+GET {{base}}/verify/{{docCode}}
+
+### Bozuk kod → 404
+GET {{base}}/verify/1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+
+# =====================================================================================
+# 10. F-7 / T-6 — MEZUNİYET
+# =====================================================================================
+
+### Mezuniyet kuralını oku (müfredat sürümüne bağlı JSON)
+GET {{base}}/curriculum-versions/1/graduation-rules
+Authorization: Bearer {{stu}}
+
+### Mezuniyet kuralını tanımla (veri olarak: zorunlu, seçmeli havuzlar, staj, GANO, AKTS)
+PUT {{base}}/curriculum-versions/1/graduation-rules
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{"min_gano": 2.0, "min_total_ects": 240, "pools": [{"name": "Yapay Zekâ", "courses": ["BM301", "BM302"], "min_courses": 1, "min_ects": 4}, {"name": "Genel Seçmeli", "courses": ["BM301", "BM302", "BM303"], "min_courses": 2, "min_ects": 7}]}
+
+### Mezuniyet denetimi: "mezun olabilir" ya da "şu dersler eksik" + kalan dersler
+GET {{base}}/students/1/graduation-audit
+Authorization: Bearer {{stu}}
+
+# =====================================================================================
+# 11. F-8 — RAPORLAR (raporlama / öğrenci işleri / bölüm sekreteri)
+# =====================================================================================
+
+### Bölüm bazlı başarı
+GET {{base}}/reports/department-success?term_id=1
+Authorization: Bearer {{rep}}
+
+### Doluluk
+GET {{base}}/reports/occupancy?term_id=1
+Authorization: Bearer {{rep}}
+
+### GANO dağılımı (isteğe bağlı: ?department_id=&program_id=)
+GET {{base}}/reports/gano-distribution
+Authorization: Bearer {{rep}}
+
+### Öğrenci rolü raporları göremez → 403
+GET {{base}}/reports/occupancy?term_id=1
+Authorization: Bearer {{stu}}

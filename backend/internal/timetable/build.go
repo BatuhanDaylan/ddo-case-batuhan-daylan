@@ -207,7 +207,7 @@ func SeedDemo(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO rooms (code, capacity, kind) VALUES
 		   ('SINIF-101', 50, 'lecture'), ('SINIF-102', 50, 'lecture'), ('SINIF-103', 60, 'lecture'),
-		   ('LAB-1', 30, 'lab'), ('AMFI-1', 150, 'amphi')
+		   ('LAB-1', 40, 'lab'), ('LAB-2', 40, 'lab'), ('AMFI-1', 150, 'amphi')
 		 ON CONFLICT (code) DO NOTHING`); err != nil {
 		return err
 	}

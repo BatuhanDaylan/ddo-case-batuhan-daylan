@@ -541,8 +541,11 @@ func (h *Handler) listCorrections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := h.pool.Query(r.Context(),
-		`SELECT id, result_id, requested_by, old_letter, new_letter, reason, status
-		   FROM grade_corrections WHERE id > $1 AND ($3 = '' OR status = $3) ORDER BY id LIMIT $2`,
+		`SELECT gc.id, gc.result_id, gc.requested_by, gc.old_letter, gc.new_letter, gc.reason, gc.status, c.code, st.student_no
+		   FROM grade_corrections gc
+		   JOIN course_results cr ON cr.id = gc.result_id JOIN courses c ON c.id = cr.course_id
+		   JOIN students st ON st.id = cr.student_id
+		  WHERE gc.id > $1 AND ($3 = '' OR gc.status = $3) ORDER BY gc.id LIMIT $2`,
 		after, limit+1, status)
 	if err != nil {
 		httpx.Internal(w, err)
@@ -557,11 +560,13 @@ func (h *Handler) listCorrections(w http.ResponseWriter, r *http.Request) {
 		NewLetter   string `json:"new_letter"`
 		Reason      string `json:"reason"`
 		Status      string `json:"status"`
+		CourseCode  string `json:"course_code"`
+		StudentNo   string `json:"student_no"`
 	}
 	var items []row
 	for rows.Next() {
 		var x row
-		if err := rows.Scan(&x.ID, &x.ResultID, &x.RequestedBy, &x.OldLetter, &x.NewLetter, &x.Reason, &x.Status); err != nil {
+		if err := rows.Scan(&x.ID, &x.ResultID, &x.RequestedBy, &x.OldLetter, &x.NewLetter, &x.Reason, &x.Status, &x.CourseCode, &x.StudentNo); err != nil {
 			httpx.Internal(w, err)
 			return
 		}

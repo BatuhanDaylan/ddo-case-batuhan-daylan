@@ -262,9 +262,14 @@ func (h *Handler) drop(w http.ResponseWriter, r *http.Request) {
 }
 
 type enrollmentRow struct {
-	ID        int64  `json:"id"`
-	SectionID int64  `json:"section_id"`
-	Status    string `json:"status"`
+	ID               int64  `json:"id"`
+	SectionID        int64  `json:"section_id"`
+	Status           string `json:"status"`
+	CourseCode       string `json:"course_code"`
+	CourseName       string `json:"course_name"`
+	ECTS             int    `json:"ects"`
+	AdvisorStatus    string `json:"advisor_status"`
+	WaitlistPosition *int   `json:"waitlist_position,omitempty"`
 }
 
 func (h *Handler) myEnrollments(w http.ResponseWriter, r *http.Request) {
@@ -278,8 +283,12 @@ func (h *Handler) myEnrollments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := h.pool.Query(r.Context(),
-		`SELECT id, section_id, status FROM enrollments
-		  WHERE student_id = $1 AND id > $2 AND status <> 'dropped' ORDER BY id LIMIT $3`,
+		`SELECT e.id, e.section_id, e.status, c.code, c.name, c.ects, e.advisor_status,
+		        CASE WHEN e.status = 'waitlisted' THEN
+		          (SELECT count(*)::int FROM enrollments w WHERE w.section_id = e.section_id AND w.status = 'waitlisted' AND w.id <= e.id)
+		        END
+		   FROM enrollments e JOIN sections s ON s.id = e.section_id JOIN courses c ON c.id = s.course_id
+		  WHERE e.student_id = $1 AND e.id > $2 AND e.status <> 'dropped' ORDER BY e.id LIMIT $3`,
 		studentID, after, limit+1)
 	if err != nil {
 		httpx.Internal(w, err)
@@ -289,7 +298,7 @@ func (h *Handler) myEnrollments(w http.ResponseWriter, r *http.Request) {
 	var items []enrollmentRow
 	for rows.Next() {
 		var e enrollmentRow
-		if err := rows.Scan(&e.ID, &e.SectionID, &e.Status); err != nil {
+		if err := rows.Scan(&e.ID, &e.SectionID, &e.Status, &e.CourseCode, &e.CourseName, &e.ECTS, &e.AdvisorStatus, &e.WaitlistPosition); err != nil {
 			httpx.Internal(w, err)
 			return
 		}
@@ -418,16 +427,21 @@ type Section struct {
 	Capacity      int    `json:"capacity"`
 	EnrolledCount int    `json:"enrolled_count"`
 	WaitlistSize  int    `json:"waitlist_size"`
+	CourseCode    string `json:"course_code,omitempty"`
+	CourseName    string `json:"course_name,omitempty"`
+	ECTS          int    `json:"ects,omitempty"`
 }
 
 const sectionSelect = `
 	SELECT s.id, s.term_id, s.course_id, s.code, s.instructor_id, s.capacity, s.enrolled_count,
-	       (SELECT count(*) FROM enrollments e WHERE e.section_id = s.id AND e.status = 'waitlisted')
-	  FROM sections s`
+	       (SELECT count(*) FROM enrollments e WHERE e.section_id = s.id AND e.status = 'waitlisted'),
+	       c.code, c.name, c.ects
+	  FROM sections s JOIN courses c ON c.id = s.course_id`
 
 func scanSection(row pgx.Row) (Section, error) {
 	var s Section
-	err := row.Scan(&s.ID, &s.TermID, &s.CourseID, &s.Code, &s.InstructorID, &s.Capacity, &s.EnrolledCount, &s.WaitlistSize)
+	err := row.Scan(&s.ID, &s.TermID, &s.CourseID, &s.Code, &s.InstructorID, &s.Capacity, &s.EnrolledCount, &s.WaitlistSize,
+		&s.CourseCode, &s.CourseName, &s.ECTS)
 	return s, err
 }
 
