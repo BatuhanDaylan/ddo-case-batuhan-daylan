@@ -131,9 +131,9 @@ Her satır `make verify` ile uçtan uca denenir (kimlik = tablodaki ad). Ayrınt
 
 | Kriter | Durum |
 |---|---|
-| Otomatik test (≥ 60) | **94 test fonksiyonu + 3 fuzz testi** (117 başarılı test, alt testler dahil); entegrasyon testleri **gerçek PostgreSQL**'e karşı |
+| Otomatik test (≥ 60) | **96 test fonksiyonu + 3 fuzz testi** (119 başarılı test, alt testler dahil); entegrasyon testleri **gerçek PostgreSQL**'e karşı |
 | Fuzz / özellik testleri (≥ 2) | 3 fuzz (`FuzzNodeJSON`, `FuzzParseCode`, `FuzzVerifyPassword`) + 5 rastgele-girdili özellik testi |
-| Çekirdek paket kapsamı ≥ %75 | `rules` 98,8 · `grading` 98,6 · `telemetry` 96,4 · `scheduler` 94,2 · `simulator` 89,7 · `documents` 85,4 · `graduation` 82,1 · `reports` 77,1 |
+| Çekirdek paket kapsamı ≥ %75 | `rules` 98,8 · `grading` 98,6 · `telemetry` 96,4 · `scheduler` 94,2 · `simulator` 89,7 · `graduation` 83,4 · `documents` 84,5 · `reports` 77,1 (çekirdek/alan paketleri; HTTP katmanı ağırlıklı paketlerin düşük kapsamı için bkz. § Yapılmayanlar) |
 | CI (build + test + lint + `govulncheck` + imaj) | GitHub Actions; gofmt, vet, staticcheck, entegrasyon testleri, govulncheck, imaj ve frontend derlemesi |
 | OpenAPI | 76 işlem, `/openapi.yaml`; **belge ile gerçek rotalar birebir eşleşir** (test) |
 | Prometheus `/metrics` | HTTP istek/süre (yol deseniyle), eşzamanlı istek, kayıt sonuçları |
@@ -160,6 +160,7 @@ seçildi: aşağıda 3. soru ve [docs/EXPLAIN.md](docs/EXPLAIN.md).
 - **Bonus maddelerin üçü de yapıldı** (bu başlıkta yalnızca sınırları belirtiliyor): danışman için **riskli öğrenci uyarısı yapıldı** (`GET /advisor/at-risk`: GANO < 2,00, dönem ortalaması düşüşü, son dönemde 2+ dersten kalma; devamsızlık verisi tutulmadığı için kullanılmadı). **İstek/sn grafiği yapıldı** (ana sayfa, `/metrics` sayacından 2 sn'de bir türetilir, son 2 dk). **Sürükle-bırak program editörü yapıldı** (Program & Sınav sayfası; `PATCH /section-meetings/{id}`: hedef hücre bırakmadan önce `dry_run` ile yeşil/kırmızı olur, çakışmalar nedenleriyle listelenir; dokunmatikte seç-ve-dokun). Editör yalnızca tek oturumlu şubeleri düzenler.
 - **Arayüz için otomatik uçtan uca test** (Playwright) yazılmadı; arayüz için otomatik test yok; API davranışı `make verify` ile otomatik doğrulanıyor.
 - **WAL arşivleme / PITR, yedek şifreleme, uzak yedek depolama** kurulu değil (RUNBOOK §4).
+- **HTTP katmanı ağırlıklı paketlerin birim test kapsamı düşük**: `registration` %41, `auth` %38, `gradebook` %53, `timetable` %69, `cmd/api` %33 (şartnamenin %75 kuralı çekirdek/alan paketleri içindir ve onlar karşılanıyor). Bu katmanın davranışı `make verify` (19 kimlik) ve gerçek PostgreSQL'e karşı entegrasyon testleriyle uçtan uca doğrulanıyor, ama satır kapsamı olarak ölçülmüş değil.
 - **Tek API örneği ve tek PostgreSQL**; yatay ölçekleme ve yüksek erişilebilirlik tasarlanmadı/denenmedi.
 
 **Ölçülmemiş / kısıtlı ölçülmüş**
