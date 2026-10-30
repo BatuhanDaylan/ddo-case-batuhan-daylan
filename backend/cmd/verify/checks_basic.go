@@ -27,6 +27,7 @@ func allChecks() []check {
 		{"T-5", "ders programı çözücü: çakışmasız program, çözümsüzlükte kısıt raporu", chkT5},
 		{"T-6", "mezuniyet motoru: veri olarak kurallar, en uygun havuz ataması", chkT6},
 		{"T-7", "yetki, değiştirilemez denetim, çift onay, kilit, imzalı belge", chkT7},
+		{"BONUS", "danışman için riskli öğrenci uyarısı (GANO düşüşü, kalan dersler)", chkBonusRisk},
 	}
 }
 

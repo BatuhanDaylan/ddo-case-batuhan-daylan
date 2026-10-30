@@ -305,6 +305,10 @@ Authorization: Bearer {{stu}}
 GET {{base}}/advisor/enrollments?status=pending
 Authorization: Bearer {{adv}}
 
+### Bonus: riskli öğrenci uyarısı (yalnızca danışanlar)
+GET {{base}}/advisor/at-risk
+Authorization: Bearer {{adv}}
+
 ### Danışman: onayla / reddet (ret koltuğu bekleyene aktarır)
 POST {{base}}/enrollments/1/advisor-decision
 Authorization: Bearer {{adv}}

@@ -1,4 +1,4 @@
-import { listAll, post } from '../api';
+import { get, listAll, post } from '../api';
 import { Async, Badge, Card, Notice, PageTitle, Table, useAction, useFetch } from '../ui';
 
 interface Row {
@@ -7,6 +7,47 @@ interface Row {
   course_code: string;
   status: 'enrolled' | 'waitlisted';
   advisor_status: 'pending' | 'approved' | 'rejected';
+}
+
+interface Risk {
+  student_id: number;
+  student_no: string;
+  gano: number;
+  last_term_gpa: number;
+  prev_term_gpa: number | null;
+  failed_in_last_term: number;
+  reasons: ('low_gano' | 'gpa_drop' | 'failed_courses')[];
+}
+
+const REASON: Record<Risk['reasons'][number], string> = {
+  low_gano: 'GANO 2,00 altında',
+  gpa_drop: 'Dönem ortalaması düştü',
+  failed_courses: 'Son dönemde 2+ dersten kaldı',
+};
+
+function AtRisk() {
+  const risk = useFetch(() => get<{ items: Risk[] }>('/advisor/at-risk').then((r) => r.items), []);
+  return (
+    <Card title="Riskli öğrenciler">
+      <Async state={risk} isEmpty={(d) => d.length === 0} empty="Riskli öğrenci yok.">
+        {(d) => (
+          <Table>
+            <thead><tr><th>Öğrenci no</th><th>GANO</th><th>Son dönem</th><th>Uyarılar</th></tr></thead>
+            <tbody>
+              {d.map((r) => (
+                <tr key={r.student_id}>
+                  <td>{r.student_no}</td>
+                  <td>{r.gano.toFixed(2)}</td>
+                  <td>{r.last_term_gpa.toFixed(2)}{r.prev_term_gpa != null && ` (önceki ${r.prev_term_gpa.toFixed(2)})`}</td>
+                  <td><div className="row">{r.reasons.map((x) => <Badge key={x} tone="warn">{REASON[x]}</Badge>)}</div></td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        )}
+      </Async>
+    </Card>
+  );
 }
 
 export function Approvals() {
@@ -49,6 +90,7 @@ export function Approvals() {
           )}
         </Async>
       </Card>
+      <AtRisk />
     </div>
   );
 }

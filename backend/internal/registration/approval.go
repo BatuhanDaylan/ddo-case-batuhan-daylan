@@ -19,6 +19,7 @@ import (
 func (h *Handler) ApprovalRoutes(r chi.Router) {
 	advisor := auth.Require(auth.RoleAdvisor)
 	r.With(advisor).Get("/advisor/enrollments", h.advisorList)
+	r.With(advisor).Get("/advisor/at-risk", h.atRisk)
 	r.With(advisor).Post("/enrollments/{id}/advisor-decision", h.advisorDecision)
 	r.With(auth.Require(auth.RoleRegistrar, auth.RoleDeptSecretary)).Put("/terms/{id}/drop-deadline", h.setDropDeadline)
 }

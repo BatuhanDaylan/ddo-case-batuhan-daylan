@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 )
 
@@ -238,4 +239,47 @@ func chkF8(t *T, e *env) {
 	t.must(total == dist.num("total_students") && total >= 4, "aralık toplamı %v, toplam öğrenci %v", total, dist.num("total_students"))
 	t.must(e.call("GET", p("/reports/occupancy?term_id=%d", w.term), e.stu, nil).Status == 403, "öğrenci rapor gördü")
 	t.must(e.call("GET", "/reports/occupancy", e.rep, nil).Status == 400, "term_id olmadan rapor üretildi")
+}
+
+// chkBonusRisk: danışman yalnızca kendi danışanlarından riskli olanı görür; sağlıklı öğrenci listelenmez.
+func chkBonusRisk(t *T, e *env) {
+	w := e.world()
+	mk := func(code string) int64 {
+		r := e.call("POST", "/terms", e.reg, M{"code": code + e.sfx, "name": "Risk dönemi " + code, "registration_open": false})
+		t.must(r.Status == 201, "dönem %s: %s", code, r.Raw)
+		return r.id("id")
+	}
+	prev, last := mk("VRP"), mk("VRL") // kimlik sırası = zaman sırası
+
+	risky := e.newStudent(t, "riskli", w.prog, 2022, &w.advisor)
+	e.pass(t, risky.sid, w.course["A"], prev, "BB", 3)
+	e.pass(t, risky.sid, w.course["B"], prev, "BB", 3)
+	e.pass(t, risky.sid, w.course["C"], last, "FF", 0)
+	e.pass(t, risky.sid, w.course["D"], last, "FF", 0)
+	fine := e.newStudent(t, "saglam", w.prog, 2022, &w.advisor)
+	e.pass(t, fine.sid, w.course["A"], prev, "BB", 3)
+	e.pass(t, fine.sid, w.course["A"], last, "BA", 3.5)
+	other := e.newStudent(t, "baskasi", w.prog, 2022, nil) // danışanı değil
+	e.pass(t, other.sid, w.course["A"], last, "FF", 0)
+
+	r := e.call("GET", "/advisor/at-risk", w.advisor.token, nil)
+	t.must(r.Status == 200, "risk listesi: %d %s", r.Status, r.Raw)
+	var found bool
+	for _, it := range r.arr("items") {
+		m, _ := it.(map[string]any)
+		sid, _ := m["student_id"].(float64)
+		switch int64(sid) {
+		case fine.sid:
+			t.fail("sağlıklı öğrenci riskli listelendi")
+		case other.sid:
+			t.fail("danışanı olmayan öğrenci görüldü (yetki sızıntısı)")
+		case risky.sid:
+			found = true
+			reasons := fmt.Sprint(m["reasons"])
+			t.must(reasons == "[low_gano gpa_drop failed_courses]", "uyarı kodları: %s", reasons)
+		}
+	}
+	t.must(found, "riskli öğrenci listelenmedi: %s", r.Raw)
+	t.must(e.call("GET", "/advisor/at-risk", risky.token, nil).Status == 403, "öğrenci riskli listesine erişti")
+	t.must(e.call("GET", "/advisor/at-risk", "", nil).Status == 401, "anonim erişim")
 }

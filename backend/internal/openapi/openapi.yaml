@@ -409,6 +409,15 @@ paths:
       x-roles: [advisor]
       parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }, { name: status, in: query, schema: { type: string, enum: [pending, approved, rejected] } }]
       responses: { "200": { $ref: "#/components/responses/Page" } }
+  /advisor/at-risk:
+    get:
+      tags: [Kayıt]
+      summary: Riskli öğrenci uyarısı (yalnızca kendi danışanları; bonus)
+      description: |
+        Not verisinden üç sinyal: `low_gano` (GANO < 2,00), `gpa_drop` (son dönem ortalaması öncekinden >= 0,50 düşük),
+        `failed_courses` (son dönemde >= 2 dersten kalma). Devamsızlık verisi tutulmadığı için kullanılmaz.
+      x-roles: [advisor]
+      responses: { "200": { description: "`{items:[{student_id, student_no, gano, last_term_gpa, prev_term_gpa, failed_in_last_term, reasons[]}]}`" } }
   /enrollments/{id}/advisor-decision:
     parameters: [{ $ref: "#/components/parameters/id" }]
     post:

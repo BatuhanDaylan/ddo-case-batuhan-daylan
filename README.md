@@ -6,7 +6,7 @@
 Bir devlet üniversitesinin akademik yapısını, ders kayıt dönemlerini, not sürecini ve mezuniyet kontrolünü yöneten; **Go +
 PostgreSQL + Docker** ile çalışan, **tek komutla ayağa kalkan** ve her zorlu görevi **otomatik doğrulayan** bir sistem.
 
-> **Kısa sonuç:** 7 zorlu görevin hepsi ve 8 kapsam maddesinin hepsi uygulandı; `make verify` **18/18 PASS** (≈6 sn).
+> **Kısa sonuç:** 7 zorlu görevin hepsi ve 8 kapsam maddesinin hepsi uygulandı; `make verify` **19/19 PASS** (≈6 sn).
 > Kayıt anı yarışı (T-1): 15.000 istek, 1.482 istek/sn, p95 426 ms, **0 sunucu hatası, tam 1.200 koltuk, kontenjan aşımı yok**.
 > Yapılmayanlar ve sınırlamalar açıkça [§ Yapılmayanlar](#yapılmayanlar-ve-bilinen-sınırlamalar) altında.
 
@@ -157,7 +157,7 @@ seçildi: aşağıda 3. soru ve [docs/EXPLAIN.md](docs/EXPLAIN.md).
 Şartname "yapılmadı, nedeni şu" diyen dürüstlüğü, çalışıyormuş gibi sunmaktan üstün tutuyor. Eksiklerim:
 
 **Yapılmayanlar**
-- **Bonus maddeler** (riskli öğrenci uyarısı, sürükle-bırak program editörü): yapılmadı. Yalnızca canlı istek/kayıt sayaçları paneli var.
+- **Bonus:** danışman için **riskli öğrenci uyarısı yapıldı** (`GET /advisor/at-risk`: GANO < 2,00, dönem ortalaması düşüşü, son dönemde 2+ dersten kalma; devamsızlık verisi tutulmadığı için kullanılmadı). **Sürükle-bırak program editörü ve istek/sn grafiği yapılmadı.** Yalnızca canlı istek/kayıt sayaçları paneli var.
 - **Arayüz için otomatik uçtan uca test** (Playwright) yazılmadı; arayüz için otomatik test yok; API davranışı `make verify` ile otomatik doğrulanıyor.
 - **WAL arşivleme / PITR, yedek şifreleme, uzak yedek depolama** kurulu değil (RUNBOOK §4).
 - **Tek API örneği ve tek PostgreSQL**; yatay ölçekleme ve yüksek erişilebilirlik tasarlanmadı/denenmedi.

@@ -25,7 +25,8 @@ HEALTH   PASS   GET /health (veritabanı dahil), /metrics, JSON 404
 AUTH     PASS   yanlış parola, token'sız/sahte erişim, refresh rotasyonu + yeniden kullanım tespiti
 F-1 … F-8  PASS
 T-1 … T-7  PASS
-Toplam 18 kimlik: 18 PASS, 0 FAIL
+BONUS  PASS
+Toplam 19 kimlik: 19 PASS, 0 FAIL
 ```
 
 Diğer komutlar:
@@ -112,6 +113,7 @@ Metrikler: <http://localhost:8080/metrics> · OpenAPI: <http://localhost:8080/op
 | T-4 | `go test ./internal/grading ./internal/gradebook` (özellik testleri: harf tekdüzeliği, best ≥ last) |
 | T-5 | `go test -v -run 'TestSample|TestSolverAgrees' ./internal/scheduler` (kaba kuvvetle çapraz doğrulama) |
 | T-6 | `go test -run TestSolverMatchesBruteForce ./internal/graduation` |
+| BONUS | `go test ./internal/registration -run TestRiskReasons` · `make verify` (BONUS) |
 | T-7 | `go test ./internal/documents` (imza kurcalama testi) · `make verify` (T-7) |
 
 Go yerelde kurulu olmak zorunda değildir; `make test` testleri konteynerde çalıştırır.
