@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/batuhan-daylan/uninet/internal/gradebook"
 	"github.com/batuhan-daylan/uninet/internal/rules"
 )
 
@@ -174,13 +175,9 @@ func loadInput(ctx context.Context, q querier, studentID int64, candidateIDs []i
 		passed = rules.ExpandPassed(passed, eq)
 	}
 
-	// Muaf dersler notsuzdur; GANO'ya girmez.
-	var gano float64
-	if err := q.QueryRow(ctx,
-		`SELECT COALESCE(SUM(r.grade_point * c.ects) / NULLIF(SUM(c.ects), 0), 0)::float8
-		   FROM course_results r JOIN courses c ON c.id = r.course_id
-		  WHERE r.student_id = $1 AND NOT r.exempt`,
-		studentID).Scan(&gano); err != nil {
+	// GANO, not motorundaki tek tanımdan gelir (tekrar-alma politikası ve muafiyet kuralları dahil).
+	gano, err := gradebook.LoadGANO(ctx, q, studentID)
+	if err != nil {
 		return out, err
 	}
 

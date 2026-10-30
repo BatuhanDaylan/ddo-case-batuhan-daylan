@@ -79,3 +79,30 @@ Muafiyet `course_results.exempt = true` satırıdır (harf `MU`), GANO sorgusu b
 **Neden:** Zincirleme denklik, yönetici hatasıyla beklenmedik dersleri "geçilmiş" saydırabilir; açık kayıt
 girmek denetlenebilirliği artırır. Denklik hem ön koşul/tekrar kontrolünde hem müfredat durumunda aynı
 `ExpandPassed` fonksiyonuyla uygulanır, böylece iki yer birbirinden ayrışmaz.
+
+## 13. Not hesabı saf pakette; bütünleme/mazeret ayrı puan olarak saklanır
+**Karar:** `internal/grading` ağırlıklı toplam, mutlak/bağıl (T-skoru) harf notu ve GANO'yu veritabanından
+bağımsız hesaplar. Her bileşen için normal, bütünleme ve mazeret puanı ayrı satırdır; geçerli olan
+bütünleme > mazeret > normal önceliğiyle seçilir.
+**Neden:** Hiçbir puan silinmez/ezilmez (denetlenebilir), hesap kuralı tek yerdedir ve özellik testleriyle
+(harf tekdüzeliği: yüksek puan daha kötü not almaz; best ≥ last) güvence altındadır.
+Bağıl yöntemde 40 puanın altı doğrudan FF'dir (düşük sınıf ortalaması kimseyi hak etmediği notla geçirmesin).
+**Bilinen sınırlama:** Bütünleme/mazeret puanları ilandan ÖNCE girilir; ilandan sonraki bir değişiklik
+düzeltme talebi (çift onay) yoluyla yapılır.
+
+## 14. Not düzeltmesi çift onaylı, geçmiş değiştirilemez
+**Karar:** Öğretim üyesi düzeltme talep eder; bölüm sekreteri/öğrenci işleri karar verir. Talep eden ile
+onaylayan farklı olmalıdır (rol + `CHECK (decided_by <> requested_by)`). Her uygulanan değişiklik
+`grade_history`'ye eski/yeni notla yazılır; tablo `audit_log` ile aynı tetikleyicilerle değiştirilemezdir.
+Aynı sonuç için aynı anda yalnızca bir bekleyen talep olabilir (kısmi UNIQUE dizin).
+**Neden:** Geçmişe dönük not değişikliği tek kişinin kararıyla yapılamaz; onay anında sonuç talep anındaki
+notla eşleşmiyorsa (`stale_request`) onay reddedilir.
+
+## 15. GANO önbelleği + idempotent kuyruk işçisi
+**Karar:** `students.gano` bir önbellektir; kaynak `course_results`'tır. Not değişince etkilenen öğrenciler
+`gano_jobs`'a yazılır; işçi (`FOR UPDATE SKIP LOCKED`) her seferinde sıfırdan hesaplayıp yazar.
+Kuyruğa yazarken `ON CONFLICT DO UPDATE` kullanılır.
+**Neden:** İşçi bir satırı işlerken aynı öğrenci için yeni değişiklik gelirse `DO NOTHING` bu değişikliği
+kaybettirirdi; `DO UPDATE` satırı işçi bitince yeniden oluşturur. İş tekrar çalışsa aynı değeri yazar (testli).
+Tekrar-alma politikası (`last`/`best`) program başına seçilir; değişince programdaki tüm öğrenciler kuyruğa girer.
+Kayıt doğrulayıcının AKTS limiti de GANO'yu aynı `LoadGANO` fonksiyonundan alır, böylece tanım tektir.
