@@ -1,0 +1,103 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/batuhan-daylan/uninet/internal/config"
+	"github.com/batuhan-daylan/uninet/internal/db"
+	"github.com/batuhan-daylan/uninet/internal/httpx"
+)
+
+func main() {
+	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(log)
+
+	if err := run(log); err != nil {
+		log.Error("uygulama durdu", "err", err)
+		os.Exit(1)
+	}
+}
+
+func run(log *slog.Logger) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	if err := db.Migrate(pool); err != nil {
+		return err
+	}
+	log.Info("migrasyonlar uygulandı")
+
+	srv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           newRouter(pool),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Info("http dinleniyor", "addr", cfg.HTTPAddr)
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+	case <-ctx.Done():
+		log.Info("kapanış sinyali alındı")
+	}
+
+	// Graceful shutdown: süren istekler bitene kadar (en fazla ShutdownTimeout) bekle.
+	sctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+	return srv.Shutdown(sctx)
+}
+
+func newRouter(pool *pgxpool.Pool) http.Handler {
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.Timeout(25 * time.Second))
+
+	r.Get("/health", healthHandler(pool))
+	return r
+}
+
+// healthHandler veritabanı bağlantısını da kontrol eder.
+func healthHandler(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := pool.Ping(ctx); err != nil {
+			httpx.Error(w, http.StatusServiceUnavailable, "db_unavailable", "veritabanına ulaşılamıyor")
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "database": "ok"})
+	}
+}
