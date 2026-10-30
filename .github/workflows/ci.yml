@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: uninet
+          POSTGRES_USER: uninet
+          POSTGRES_PASSWORD: ci-only
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U uninet -d uninet"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Biçim (gofmt)
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+      - name: Lint (vet + staticcheck)
+        run: |
+          go vet ./...
+          go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
+      - name: Test (entegrasyon testleri dahil)
+        env:
+          TEST_DATABASE_URL: postgres://uninet:ci-only@localhost:5432/uninet?sslmode=disable
+        run: go test -count=1 -cover ./...
+
+      - name: Zafiyet taraması (govulncheck)
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Konteyner imajlarını derle
+        run: |
+          cp .env.example .env
+          docker compose build
