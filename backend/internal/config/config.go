@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -16,6 +17,8 @@ type Config struct {
 	AccessTTL       time.Duration
 	RefreshTTL      time.Duration
 	SeedDemo        bool
+	DBMaxConns      int32
+	HashConcurrency int
 	ShutdownTimeout time.Duration
 }
 
@@ -30,6 +33,8 @@ func Load() (Config, error) {
 		AccessTTL:       15 * time.Minute,
 		RefreshTTL:      7 * 24 * time.Hour,
 		SeedDemo:        getenv("SEED_DEMO", "true") == "true",
+		DBMaxConns:      int32(atoi(getenv("DB_MAX_CONNS", "40"), 40)),
+		HashConcurrency: atoi(getenv("HASH_CONCURRENCY", "4"), 4),
 		ShutdownTimeout: 15 * time.Second,
 	}
 	if c.DatabaseURL == "" {
@@ -51,4 +56,13 @@ func getenv(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// atoi sayıya çevirir; geçersiz ya da pozitif olmayan değerde varsayılanı döner.
+func atoi(s string, def int) int {
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 {
+		return def
+	}
+	return n
 }

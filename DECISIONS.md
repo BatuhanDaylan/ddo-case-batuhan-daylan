@@ -163,3 +163,14 @@ birbirini de dışlar. Etkinlikler tek parça (ardışık saat) yerleşir.
 **API:** `POST /terms/{id}/schedule/solve` çözümsüz/zaman aşımında mevcut programı DEĞİŞTİRMEZ (`applied:false`);
 çözüm bulunur ve `apply:true` ise dönemin oturumları tek transaction'da değiştirilir ve denetime yazılır. Çıktı,
 yazılmadan önce bağımsız `Check` ile bir kez daha doğrulanır (savunma amaçlı).
+
+## 20. Üretim sağlamlığı: havuz boyutu, argon2 sınırı, tohumlu simülatör, jetonla yük testi
+**Karar:** (1) Veritabanı havuzu `DB_MAX_CONNS` (varsayılan 40) ile ayarlanır; pgx varsayılanı (işlemci sayısı, en az 4)
+kayıt anında istekleri havuzda kuyruğa sokar. (2) Giriş sırasındaki argon2 doğrulaması `HASH_CONCURRENCY` (varsayılan 4)
+ile sınırlanır; her doğrulama ~64 MiB kullandığı için sınırsız eşzamanlı giriş sunucuyu bellek tüketimiyle düşürebilirdi.
+(3) Simülatör, 12.000 argon2 hesabı yerine tüm sim kullanıcıları için tek bir parola özeti kullanır (veri üretimi 16 sn).
+(4) Yük testi token'ları doğrudan JWT sırrıyla imzalayarak üretilir; 5.000 argon2 girişi yük testinin konusu olmasın.
+**Neden:** Yük testi kayıt/kontenjan doğruluğunu ölçer, giriş maliyetini değil. Token imzalama aracı yalnızca test
+profilinde (`--profile sim`) çalışır ve üretim imajının varsayılan giriş noktası değildir.
+**Kanıt:** `docs/LOAD_TEST.md`: 15.000 istek, 1.482 istek/sn, p95 426 ms, %0 sunucu hatası, tam 1.200 koltuk,
+13.800 bekleme, veritabanı doğrulaması PASS.

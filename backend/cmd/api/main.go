@@ -22,6 +22,7 @@ import (
 	"github.com/batuhan-daylan/uninet/internal/gradebook"
 	"github.com/batuhan-daylan/uninet/internal/graduation"
 	"github.com/batuhan-daylan/uninet/internal/httpx"
+	"github.com/batuhan-daylan/uninet/internal/metrics"
 	"github.com/batuhan-daylan/uninet/internal/registration"
 	"github.com/batuhan-daylan/uninet/internal/timetable"
 )
@@ -45,7 +46,7 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	pool, err := db.Connect(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
 	if err != nil {
 		return err
 	}
@@ -76,7 +77,7 @@ func run(log *slog.Logger) error {
 	}
 
 	iss := auth.NewIssuer(cfg.JWTSecret, cfg.AccessTTL)
-	authH, err := auth.NewHandler(pool, iss, cfg.RefreshTTL)
+	authH, err := auth.NewHandler(pool, iss, cfg.RefreshTTL, cfg.HashConcurrency)
 	if err != nil {
 		return err
 	}
@@ -126,6 +127,7 @@ func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler,
 	docs *documents.Handler, grad *graduation.Handler, tt *timetable.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	r.Use(metrics.Middleware)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(25 * time.Second))
 
@@ -137,7 +139,8 @@ func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler,
 	})
 
 	r.Get("/health", healthHandler(pool))
-	docs.PublicRoutes(r) // GET /verify/{code}: kimlik gerektirmez, kodun HMAC imzası yetkidir
+	r.Handle("/metrics", metrics.Handler()) // Prometheus kazıma ucu (üretimde ağ düzeyinde kısıtlanmalı)
+	docs.PublicRoutes(r)                    // GET /verify/{code}: kimlik gerektirmez, kodun HMAC imzası yetkidir
 
 	r.Route("/auth", func(r chi.Router) {
 		r.Post("/login", authH.Login)

@@ -29,7 +29,7 @@ reset-demo:
 
 # Uzun yük testi (k6); make verify içinde değildir.
 load:
-	$(COMPOSE) --profile load run --rm k6
+	./scripts/load.sh
 
 # Tüm özellikleri API üzerinden uçtan uca dener ve PASS/FAIL tablosu basar.
 verify:

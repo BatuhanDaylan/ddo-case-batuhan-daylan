@@ -15,6 +15,7 @@ import (
 	"github.com/batuhan-daylan/uninet/internal/auth"
 	"github.com/batuhan-daylan/uninet/internal/httpx"
 	"github.com/batuhan-daylan/uninet/internal/idempotency"
+	"github.com/batuhan-daylan/uninet/internal/metrics"
 	"github.com/batuhan-daylan/uninet/internal/rules"
 )
 
@@ -192,16 +193,20 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request) {
 			out, err := EnrollTx(r.Context(), tx, studentID, sectionID)
 			switch {
 			case err == nil:
+				metrics.Enrollments.WithLabelValues(out.Status).Inc()
 				return http.StatusCreated, jsonBody(out), nil
 			case errors.Is(err, ErrSectionNotFound):
 				return http.StatusNotFound, errBody("not_found", err.Error()), nil
 			case errors.Is(err, ErrRegistrationClosed):
+				metrics.Enrollments.WithLabelValues("registration_closed").Inc()
 				return http.StatusConflict, errBody("registration_closed", err.Error()), nil
 			case errors.Is(err, ErrAlreadyRegistered):
+				metrics.Enrollments.WithLabelValues("already_registered").Inc()
 				return http.StatusConflict, errBody("already_registered", err.Error()), nil
 			default:
 				var rv *RuleViolationsError
 				if errors.As(err, &rv) {
+					metrics.Enrollments.WithLabelValues("rule_violation").Inc()
 					return http.StatusUnprocessableEntity, violationsBody(rv.Report), nil
 				}
 				return 0, nil, err

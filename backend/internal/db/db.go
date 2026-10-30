@@ -17,8 +17,19 @@ import (
 var migrationsFS embed.FS
 
 // Connect havuzu açar ve veritabanına ulaşılana kadar kısa süre yeniden dener.
-func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, url)
+//
+// maxConns havuzun en fazla bağlantı sayısıdır (0 ise pgx varsayılanı: işlemci sayısı kadar, en az 4).
+// Varsayılan çok küçüktür; kayıt anı gibi eşzamanlı yükte istekler havuzda kuyruğa girer. Değer,
+// PostgreSQL'in max_connections sınırının (varsayılan 100) altında kalmalıdır.
+func Connect(ctx context.Context, url string, maxConns int32) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, fmt.Errorf("bağlantı adresi: %w", err)
+	}
+	if maxConns > 0 {
+		cfg.MaxConns = maxConns
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("havuz: %w", err)
 	}

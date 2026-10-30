@@ -19,15 +19,19 @@ type Handler struct {
 	pool       *pgxpool.Pool
 	iss        *Issuer
 	refreshTTL time.Duration
-	dummyHash  string // kullanıcı bulunamadığında da argon2 çalıştırmak için (zamanlama sızıntısını önler)
+	dummyHash  string        // kullanıcı bulunamadığında da argon2 çalıştırmak için (zamanlama sızıntısını önler)
+	hashSem    chan struct{} // eşzamanlı argon2 doğrulamasını sınırlar (her biri ~64 MiB bellek kullanır)
 }
 
-func NewHandler(pool *pgxpool.Pool, iss *Issuer, refreshTTL time.Duration) (*Handler, error) {
+func NewHandler(pool *pgxpool.Pool, iss *Issuer, refreshTTL time.Duration, hashConcurrency int) (*Handler, error) {
+	if hashConcurrency < 1 {
+		hashConcurrency = 1
+	}
 	dummy, err := HashPassword("dummy-password-for-timing")
 	if err != nil {
 		return nil, err
 	}
-	return &Handler{pool: pool, iss: iss, refreshTTL: refreshTTL, dummyHash: dummy}, nil
+	return &Handler{pool: pool, iss: iss, refreshTTL: refreshTTL, dummyHash: dummy, hashSem: make(chan struct{}, hashConcurrency)}, nil
 }
 
 type tokenResponse struct {
@@ -85,7 +89,16 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		hash = h.dummyHash
 	}
+	// Argon2 bellek yoğundur: binlerce eşzamanlı giriş sunucuyu bellek tüketerek düşürmesin diye sınırlıyız.
+	// Sırada bekleyen istek, istemci vazgeçerse (ctx iptali) bırakılır.
+	select {
+	case h.hashSem <- struct{}{}:
+	case <-r.Context().Done():
+		httpx.Error(w, http.StatusServiceUnavailable, "busy", "sunucu meşgul, tekrar deneyin")
+		return
+	}
 	ok := VerifyPassword(in.Password, hash) && found
+	<-h.hashSem
 	if !ok {
 		h.auditLogin(r, nil, "auth.login_failed", email)
 		httpx.Error(w, http.StatusUnauthorized, "invalid_credentials", "e-posta veya parola hatalı")
