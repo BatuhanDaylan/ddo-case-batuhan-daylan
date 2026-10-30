@@ -2,10 +2,13 @@ package academic
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/batuhan-daylan/uninet/internal/rules"
 )
 
 type seedCourse struct {
@@ -85,6 +88,26 @@ func SeedDemo(ctx context.Context, pool *pgxpool.Pool) error {
 			return err
 		}
 		courseIDs[c.code] = id
+	}
+
+	// Ön koşullar: BM102 → BM101 ve (MAT101 veya FIZ101); BM105 ve BM301 → BM102.
+	prereqs := map[string]rules.Node{
+		"BM102": {Op: rules.OpAnd, Args: []rules.Node{
+			{CourseID: courseIDs["BM101"]},
+			{Op: rules.OpOr, Args: []rules.Node{{CourseID: courseIDs["MAT101"]}, {CourseID: courseIDs["FIZ101"]}}},
+		}},
+		"BM105": {CourseID: courseIDs["BM102"]},
+		"BM301": {CourseID: courseIDs["BM102"]},
+	}
+	for code, expr := range prereqs {
+		raw, err := json.Marshal(expr)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO course_prerequisites (course_id, expr) VALUES ($1, $2)`, courseIDs[code], raw); err != nil {
+			return err
+		}
 	}
 
 	for year, plan := range map[int][]placement{2021: curriculum2021, 2024: curriculum2024} {

@@ -15,6 +15,7 @@ import (
 	"github.com/batuhan-daylan/uninet/internal/auth"
 	"github.com/batuhan-daylan/uninet/internal/httpx"
 	"github.com/batuhan-daylan/uninet/internal/idempotency"
+	"github.com/batuhan-daylan/uninet/internal/rules"
 )
 
 type Handler struct{ pool *pgxpool.Pool }
@@ -37,6 +38,86 @@ func (h *Handler) Routes(r chi.Router) {
 	r.With(student).Post("/sections/{id}/enrollments", h.enroll)
 	r.With(student).Delete("/enrollments/{id}", h.drop)
 	r.With(student).Get("/me/enrollments", h.myEnrollments)
+	r.With(student).Post("/me/enrollments/validate", h.validate)
+
+	r.With(admins).Post("/sections/{id}/meetings", h.addMeeting)
+}
+
+// validate: POST /me/enrollments/validate  {"section_ids":[…]}
+// Önerilen şubeleri mevcut programla birlikte değerlendirir ve BÜTÜN ihlalleri tek yanıtta listeler.
+// Salt okunurdur; hiçbir şey yazmaz.
+func (h *Handler) validate(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		SectionIDs []int64 `json:"section_ids"`
+	}
+	if !httpx.Decode(w, r, &in) {
+		return
+	}
+	if len(in.SectionIDs) == 0 || len(in.SectionIDs) > 20 {
+		httpx.Error(w, http.StatusBadRequest, "validation_error", "section_ids 1-20 eleman içermeli")
+		return
+	}
+	studentID, ok := h.studentID(w, r)
+	if !ok {
+		return
+	}
+	// REPEATABLE READ: birden çok sorgu aynı anlık görüntüyü görür; tutarsız rapor çıkmaz.
+	tx, err := h.pool.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		httpx.Internal(w, err)
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+
+	ld, err := loadInput(r.Context(), tx, studentID, in.SectionIDs)
+	switch {
+	case errors.Is(err, ErrSectionNotFound):
+		httpx.Error(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	case errors.Is(err, ErrMixedTerms):
+		httpx.Error(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	case err != nil:
+		httpx.Internal(w, err)
+		return
+	}
+	rep := rules.Check(ld.Input)
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"valid": rep.OK(), "violations": rep.Violations,
+		"total_ects": rep.TotalECTS, "max_ects": rep.MaxECTS, "gano": ld.Input.GANO,
+	})
+}
+
+func (h *Handler) addMeeting(w http.ResponseWriter, r *http.Request) {
+	sectionID, ok := httpx.PathID(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Day      int `json:"day"`
+		StartMin int `json:"start_min"`
+		EndMin   int `json:"end_min"`
+	}
+	if !httpx.Decode(w, r, &in) {
+		return
+	}
+	if in.Day < 1 || in.Day > 7 || in.StartMin < 0 || in.EndMin > 1440 || in.StartMin >= in.EndMin {
+		httpx.Error(w, http.StatusBadRequest, "validation_error",
+			"day 1-7 olmalı; 0 <= start_min < end_min <= 1440 olmalı")
+		return
+	}
+	var id int64
+	if err := h.pool.QueryRow(r.Context(),
+		`INSERT INTO section_meetings (section_id, day, start_min, end_min) VALUES ($1, $2, $3, $4) RETURNING id`,
+		sectionID, in.Day, in.StartMin, in.EndMin).Scan(&id); err != nil {
+		if !httpx.DBError(w, err) {
+			httpx.Internal(w, err)
+		}
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, map[string]any{
+		"id": id, "section_id": sectionID, "day": in.Day, "start_min": in.StartMin, "end_min": in.EndMin,
+	})
 }
 
 // studentID oturumdaki kullanıcının öğrenci kaydını bulur.
@@ -62,6 +143,17 @@ func jsonBody(v any) []byte {
 
 func errBody(code, msg string) []byte {
 	return jsonBody(map[string]any{"error": map[string]string{"code": code, "message": msg}})
+}
+
+// violationsBody ortak hata biçimini korur ve tüm ihlalleri "violations" altında listeler.
+func violationsBody(rep rules.Report) []byte {
+	return jsonBody(map[string]any{"error": map[string]any{
+		"code":       "rule_violation",
+		"message":    "kayıt kuralları ihlal edildi",
+		"violations": rep.Violations,
+		"total_ects": rep.TotalECTS,
+		"max_ects":   rep.MaxECTS,
+	}})
 }
 
 func writeRaw(w http.ResponseWriter, status int, body []byte, replayed bool) {
@@ -104,6 +196,10 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(err, ErrAlreadyRegistered):
 				return http.StatusConflict, errBody("already_registered", err.Error()), nil
 			default:
+				var rv *RuleViolationsError
+				if errors.As(err, &rv) {
+					return http.StatusUnprocessableEntity, violationsBody(rv.Report), nil
+				}
 				return 0, nil, err
 			}
 		})

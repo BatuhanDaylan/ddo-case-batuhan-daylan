@@ -10,6 +10,7 @@ import (
 
 	"github.com/batuhan-daylan/uninet/internal/auth"
 	"github.com/batuhan-daylan/uninet/internal/httpx"
+	"github.com/batuhan-daylan/uninet/internal/rules"
 )
 
 type CurriculumCourse struct {
@@ -129,6 +130,17 @@ func (h *Handler) createVersion(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		seen[c.CourseID] = true
+	}
+
+	// Müfredat kaydedilirken ön koşul grafiği döngüsüz olmalı (T-2).
+	graph, err := loadPrereqGraph(r.Context(), h.pool)
+	if err != nil {
+		internal(w, err)
+		return
+	}
+	if cycle := rules.DetectCycle(graph); cycle != nil {
+		httpx.Error(w, http.StatusUnprocessableEntity, "prerequisite_cycle", cycleMessage(r.Context(), h.pool, cycle))
+		return
 	}
 
 	id, err := h.createAudited(r.Context(), r, "curriculum_version", func(tx pgx.Tx) (int64, error) {

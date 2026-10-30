@@ -38,6 +38,10 @@ func (h *Handler) Routes(r chi.Router) {
 	r.Get("/courses", h.listCourses)
 	r.With(writers).Post("/courses", h.createCourse)
 
+	r.Get("/courses/{id}/prerequisites", h.getPrereq)
+	r.With(writers).Put("/courses/{id}/prerequisites", h.setPrereq)
+	r.With(writers).Delete("/courses/{id}/prerequisites", h.deletePrereq)
+
 	r.Get("/programs/{id}/curriculum-versions", h.listVersions)
 	r.With(writers).Post("/programs/{id}/curriculum-versions", h.createVersion)
 	r.Get("/curriculum-versions/{id}", h.getVersion)

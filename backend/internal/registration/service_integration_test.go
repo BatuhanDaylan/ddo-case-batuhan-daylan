@@ -2,6 +2,7 @@ package registration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/url"
@@ -338,5 +339,134 @@ func TestIdempotencyConcurrentSameKey(t *testing.T) {
 	_, err := idempotency.Do(ctx, pool, userID, "anahtar-1", "POST /baska", func(pgx.Tx) (int, []byte, error) { return 200, nil, nil })
 	if err != idempotency.ErrKeyReuse {
 		t.Errorf("anahtar yeniden kullanımı: %v, beklenen ErrKeyReuse", err)
+	}
+}
+
+// addSection mevcut açık döneme yeni bir ders + 01 şubesi ekler.
+func addSection(t *testing.T, pool *pgxpool.Pool, code string, ects int) (sectionID, courseID int64) {
+	t.Helper()
+	ctx := context.Background()
+	var termID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM terms LIMIT 1`).Scan(&termID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO courses (code, name, ects) VALUES ($1, $1, $2) RETURNING id`, code, ects).Scan(&courseID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO sections (term_id, course_id, code, capacity) VALUES ($1, $2, '01', 100) RETURNING id`,
+		termID, courseID).Scan(&sectionID); err != nil {
+		t.Fatal(err)
+	}
+	return sectionID, courseID
+}
+
+func meeting(t *testing.T, pool *pgxpool.Pool, sectionID int64, day, from, to int) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO section_meetings (section_id, day, start_min, end_min) VALUES ($1, $2, $3, $4)`,
+		sectionID, day, from, to); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func violationCodes(err error) map[string]bool {
+	var rv *RuleViolationsError
+	out := map[string]bool{}
+	if errors.As(err, &rv) {
+		for _, v := range rv.Report.Violations {
+			out[v.Code] = true
+		}
+	}
+	return out
+}
+
+// T-2: ihlaller tek transaction'da değerlendirilir, HEPSİ birden döner ve hiçbir şey yazılmaz.
+func TestEnrollRuleViolationsAllAtOnce(t *testing.T) {
+	pool := newTestPool(t)
+	s1, ids := fixture(t, pool, 1, 100) // C1, 5 AKTS
+	ctx := context.Background()
+	student := ids[0]
+
+	meeting(t, pool, s1, 1, 600, 720) // Pzt 10:00-12:00
+	if _, err := enrollOnce(ctx, pool, student, s1); err != nil {
+		t.Fatal(err)
+	}
+
+	// S2: ön koşulu sağlanmayan + S1 ile çakışan ders.
+	s2, c2 := addSection(t, pool, "C2", 6)
+	meeting(t, pool, s2, 1, 540, 660) // Pzt 09:00-11:00
+	_, prereqCourse := addSection(t, pool, "P1", 6)
+	expr := fmt.Sprintf(`{"course_id": %d}`, prereqCourse)
+	if _, err := pool.Exec(ctx, `INSERT INTO course_prerequisites (course_id, expr) VALUES ($1, $2)`, c2, expr); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := enrollOnce(ctx, pool, student, s2)
+	got := violationCodes(err)
+	if !got["PREREQ_NOT_MET"] || !got["TIME_CONFLICT"] || len(got) != 2 {
+		t.Fatalf("beklenen {PREREQ_NOT_MET, TIME_CONFLICT}, gelen %v (err=%v)", got, err)
+	}
+	if n := count(t, pool, `SELECT count(*) FROM enrollments WHERE section_id=$1`, s2); n != 0 {
+		t.Errorf("reddedilen kayıt için %d satır yazıldı", n)
+	}
+	if n := count(t, pool, `SELECT enrolled_count FROM sections WHERE id=$1`, s2); n != 0 {
+		t.Errorf("reddedilen şubenin sayacı %d, beklenen 0", n)
+	}
+
+	// Ön koşul geçilirse yalnızca çakışma kalır.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO course_results (student_id, course_id, term_id, letter, grade_point, passed)
+		 SELECT $1, $2, id, 'BA', 3.5, true FROM terms LIMIT 1`, student, prereqCourse); err != nil {
+		t.Fatal(err)
+	}
+	_, err = enrollOnce(ctx, pool, student, s2)
+	if got := violationCodes(err); !got["TIME_CONFLICT"] || len(got) != 1 {
+		t.Errorf("yalnızca TIME_CONFLICT beklenirdi: %v", got)
+	}
+
+	// AKTS: GANO 3.5 → limit 40; 5 (S1) + 36 → 41 aşar.
+	s3, _ := addSection(t, pool, "BIG", 36)
+	_, err = enrollOnce(ctx, pool, student, s3)
+	if got := violationCodes(err); !got["ECTS_LIMIT_EXCEEDED"] {
+		t.Errorf("AKTS ihlali beklenirdi: %v", got)
+	}
+}
+
+// Aynı öğrenci 10 şubeye (6 AKTS) eşzamanlı kaydolmaya çalışır; limit 30 AKTS → tam 5 başarılı.
+// Öğrenci satır kilidi olmasaydı her istek "henüz hiçbir şeyi yok" görüp hepsi geçebilirdi.
+func TestSameStudentConcurrentECTSLimit(t *testing.T) {
+	pool := newTestPool(t)
+	_, ids := fixture(t, pool, 1, 100)
+	ctx := context.Background()
+
+	var sections []int64
+	for i := 0; i < 10; i++ {
+		sid, _ := addSection(t, pool, fmt.Sprintf("X%d", i), 6)
+		sections = append(sections, sid)
+	}
+	var ok, rejected atomic.Int32
+	var wg sync.WaitGroup
+	for _, sid := range sections {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := enrollOnce(ctx, pool, ids[0], sid)
+			switch {
+			case err == nil:
+				ok.Add(1)
+			case violationCodes(err)["ECTS_LIMIT_EXCEEDED"]:
+				rejected.Add(1)
+			default:
+				t.Errorf("beklenmeyen hata: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if ok.Load() != 5 || rejected.Load() != 5 {
+		t.Errorf("başarılı=%d reddedilen=%d, beklenen 5/5", ok.Load(), rejected.Load())
+	}
+	if n := count(t, pool, `SELECT count(*) FROM enrollments WHERE student_id=$1 AND status='enrolled'`, ids[0]); n != 5 {
+		t.Errorf("öğrencinin aktif kaydı %d, beklenen 5", n)
 	}
 }

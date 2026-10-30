@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/batuhan-daylan/uninet/internal/audit"
+	"github.com/batuhan-daylan/uninet/internal/rules"
 )
 
 var (
@@ -43,32 +44,40 @@ type DropResult struct {
 //   - enrollments.id'ler kilit alma sırasıyla verilir (bekleme listesi adil sıradadır).
 //
 // Farklı şubeler birbirini beklemez. Kilit, çağıranın transaction'ı bitince bırakılır.
+//
+// Sıra: (1) öğrenci satırı kilidi, (2) kural denetimi (T-2), (3) şube satırı kilidi.
+// Kurallar şube kilidinden ÖNCE değerlendirilir: ağır okumalar kritik bölümü uzatmaz.
+// Öğrenci kilidi, aynı öğrencinin iki şubeye eşzamanlı kaydolarak AKTS limitini veya çakışma
+// kuralını aşmasını önler. DropTx öğrenci kilidi almadığı için kilit sırası döngü oluşturmaz.
 func EnrollTx(ctx context.Context, tx pgx.Tx, studentID, sectionID int64) (EnrollResult, error) {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM students WHERE id = $1 FOR UPDATE`, studentID); err != nil {
+		return EnrollResult{}, err
+	}
+
+	ld, err := loadInput(ctx, tx, studentID, []int64{sectionID})
+	if err != nil {
+		return EnrollResult{}, err
+	}
+	if !ld.TermOpen {
+		return EnrollResult{}, ErrRegistrationClosed
+	}
+	for _, c := range ld.Input.Current {
+		if c.SectionID == sectionID {
+			return EnrollResult{}, ErrAlreadyRegistered
+		}
+	}
+	if rep := rules.Check(ld.Input); !rep.OK() {
+		return EnrollResult{}, &RuleViolationsError{Report: rep}
+	}
+
 	var capacity, enrolled int
-	var open bool
-	err := tx.QueryRow(ctx,
-		`SELECT s.capacity, s.enrolled_count, t.registration_open
-		   FROM sections s JOIN terms t ON t.id = s.term_id
-		  WHERE s.id = $1 FOR UPDATE OF s`, sectionID).Scan(&capacity, &enrolled, &open)
+	err = tx.QueryRow(ctx,
+		`SELECT capacity, enrolled_count FROM sections WHERE id = $1 FOR UPDATE`, sectionID).Scan(&capacity, &enrolled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return EnrollResult{}, ErrSectionNotFound
 	}
 	if err != nil {
 		return EnrollResult{}, err
-	}
-	if !open {
-		return EnrollResult{}, ErrRegistrationClosed
-	}
-
-	var already bool
-	if err := tx.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM enrollments
-		                 WHERE section_id = $1 AND student_id = $2 AND status IN ('enrolled', 'waitlisted'))`,
-		sectionID, studentID).Scan(&already); err != nil {
-		return EnrollResult{}, err
-	}
-	if already {
-		return EnrollResult{}, ErrAlreadyRegistered
 	}
 
 	status := StatusWaitlisted

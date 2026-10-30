@@ -45,3 +45,22 @@ programın `effective_year <= entry_year` olan en yeni sürümü.
 ## 7. Keyset sayfalama
 **Karar:** Listeler `?after=<son id>&limit=<n>` ile sayfalanır (`OFFSET` yok).
 **Neden:** Sayfa derinliğinden bağımsız sabit maliyet; araya kayıt girse bile kayma/tekrar olmaz.
+
+## 8. Kural doğrulayıcı saf pakette (`internal/rules`), veritabanından bağımsız
+**Karar:** Ön koşul ifadeleri, döngü tespiti ve kayıt kuralları (çakışma, tekrar, AKTS) veritabanına dokunmayan
+saf fonksiyonlardır. Girdiyi `registration` paketi yükler, `rules.Check` değerlendirir.
+**Neden:** Kural mantığı DB'siz, milisaniyede ve yoğun testlenebilir (kapsam %99, özellik tabanlı döngü testi,
+fuzz). `Check` ilk hatada durmaz; bütün ihlalleri tek raporda döner.
+
+## 9. Ön koşul ifadesi JSON ağacı; döngü denetimi advisory kilit altında
+**Karar:** `A ve (B veya C)` gibi ifadeler `{"op":"and","args":[…]}` ağacı olarak `course_prerequisites.expr`
+(JSONB) içinde saklanır. Kaydederken derinlik/düğüm sınırı uygulanır, DFS ile döngü aranır; tüm grafik
+değişikliği `pg_advisory_xact_lock` altında yapılır.
+**Neden:** İki yönetici aynı anda A→B ve B→A girerse kilitsiz durumda ikisi de "döngü yok" görürdü.
+**Bedeli:** Grafik değişiklikleri seri işlenir; ön koşul tanımı seyrek olduğundan önemsizdir.
+
+## 10. Kural denetimi şube kilidinden önce; öğrenci satırı kilitlenir
+**Karar:** `EnrollTx` sırası: öğrenci kilidi → kural denetimi → şube kilidi. `DropTx` öğrenci kilidi almaz.
+**Neden:** Ağır okumalar T-1'deki kritik bölümü (şube kilidi) uzatmaz. Öğrenci kilidi, aynı öğrencinin iki
+şubeye eşzamanlı kaydolup AKTS/çakışma kuralını aşmasını önler (testle kanıtlandı: 10 eşzamanlı istek, limit 30
+AKTS → tam 5 başarılı). Kilit sırası tek yönlü olduğundan kilitlenme (deadlock) oluşmaz.
