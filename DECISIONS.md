@@ -124,3 +124,20 @@ Başarılıysa yalnızca doğrulayıcının basılı belgeyle karşılaştıraca
 **Karar:** PDF standart yazı tipleri yerine `go:embed` ile gömülen DejaVu Sans kullanır.
 **Neden:** PDF'in çekirdek yazı tipleri cp1252'dir; ş, ğ, İ, ı gibi Türkçe harfleri basamaz. İmaj boyutuna
 ~1,4 MB ekler, ama harici dosya/çalışma zamanı bağımlılığı olmaz.
+
+## 18. Mezuniyet kuralları veridir; en uygun havuz ataması kesin çözücüyle
+**Karar:** Kurallar (zorunlu dersler, seçmeli havuzlar "en az N ders ve M AKTS", staj, GANO, toplam AKTS)
+bir müfredat sürümüne bağlı JSONB belgesidir (`graduation_rules`); yönetici HTTP ile günceller, değişiklik
+eski/yeni değerle denetime yazılır. Bir ders birden çok havuzda geçerli olabilir ama yalnızca BİR havuza sayılır;
+zorunlu ve staj olarak sayılan ders havuzlara girmez.
+**Çözücü:** Her havuzun ilerlemesi (ders sayısı, AKTS) eşiğe kırpılarak izlenir; dersler üzerinde katman katman
+dinamik programlama yapılır. Durum sayısı ders sayısına değil havuz sayısına ve eşiklere bağlıdır. Hiçbir atama
+tüm havuzları doyurmuyorsa toplam eksiği en küçük olan atama raporlanır ("şu kadar ders/AKTS eksik, alınabilecek
+dersler şunlar").
+**Alternatifler:** (1) Açgözlü atama: yanlış sonuç verir (ortak dersi "dolu" havuza koymak, o dersten başka çıkışı
+olmayan havuzu boşta bırakır; testte bu tuzak var). (2) Salt akış (max-flow): ders sayısı eşiklerini çözer ama AKTS
+eşikleriyle birlikte dersi bölünemez saymak akışla ifade edilemez; DP ikisini birlikte kesin çözer.
+**Kanıt:** 400 rastgele örnekte çözücünün eksiği kaba kuvvetle (tüm atamalar) bulunan en küçük eksiğe eşit.
+**Bilinen sınırlama:** Durum sayısı 300 bin ile sınırlıdır; aşılırsa 422 `rules_too_complex` döner
+(en fazla 8 havuz, havuz başına 50 ders / 500 AKTS eşiği doğrulanır).
+**Toplam AKTS:** Denklik çift saymaz; yalnızca gerçekten başarılan dersler toplanır.

@@ -25,6 +25,8 @@ var seedCourses = []seedCourse{
 	{"BM104", "Ayrık Matematik", 5},
 	{"BM105", "Veri Yapıları", 6},
 	{"BM301", "Yapay Zekâya Giriş", 5},
+	{"BM302", "Makine Öğrenmesi", 4},
+	{"BM303", "Veri Madenciliği", 3},
 }
 
 // code → (semester, kind)
@@ -37,14 +39,14 @@ type placement struct {
 var curriculum2021 = []placement{
 	{"BM101", 1, "required"}, {"MAT101", 1, "required"}, {"FIZ101", 1, "required"},
 	{"BM102", 2, "required"}, {"MAT102", 2, "required"}, {"BM104", 2, "required"},
-	{"BM301", 5, "elective"},
+	{"BM301", 5, "elective"}, {"BM302", 6, "elective"}, {"BM303", 6, "elective"},
 }
 
 // 2024 müfredatı: Ayrık Matematik yerine Veri Yapıları geldi. 2021 girişliler etkilenmez.
 var curriculum2024 = []placement{
 	{"BM101", 1, "required"}, {"MAT101", 1, "required"}, {"FIZ101", 1, "required"},
 	{"BM102", 2, "required"}, {"MAT102", 2, "required"}, {"BM105", 2, "required"},
-	{"BM301", 5, "elective"},
+	{"BM301", 5, "elective"}, {"BM302", 6, "elective"}, {"BM303", 6, "elective"},
 }
 
 // SeedDemo örnek akademik yapıyı ve demo öğrenciyi kurar. İdempotenttir:
