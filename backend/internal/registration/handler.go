@@ -246,6 +246,10 @@ func (h *Handler) drop(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	if errors.Is(err, ErrDropPeriodOver) {
+		httpx.Error(w, http.StatusConflict, "drop_period_over", "ekle-sil süresi sona erdi; kaydı yalnızca danışman/öğrenci işleri kaldırabilir")
+		return
+	}
 	if err != nil {
 		httpx.Internal(w, err)
 		return

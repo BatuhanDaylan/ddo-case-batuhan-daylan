@@ -174,3 +174,29 @@ ile sınırlanır; her doğrulama ~64 MiB kullandığı için sınırsız eşzam
 profilinde (`--profile sim`) çalışır ve üretim imajının varsayılan giriş noktası değildir.
 **Kanıt:** `docs/LOAD_TEST.md`: 15.000 istek, 1.482 istek/sn, p95 426 ms, %0 sunucu hatası, tam 1.200 koltuk,
 13.800 bekleme, veritabanı doğrulaması PASS.
+
+## 21. Danışman onayı koltuğu tutar; ret idari bırakmadır (F-3)
+**Karar:** Kayıt anında koltuk hemen alınır; danışman onayı (`advisor_status`: pending/approved/rejected) sonradan gelir.
+Ret, kaydı düşürür ve boşalan koltuğu AYNI transaction'da bekleme listesinin ilk kişisine verir. Ret, ekle-sil
+süresine tabi değildir (idari işlem); öğrencinin kendi bırakması süreye tabidir (`terms.drop_deadline`).
+**Neden:** Onay bekleyerek koltuk vermek, 5.000 kişilik kayıt anında adil sırayı ve T-1 kanıtını bozardı. Koltuk
+tutup sonradan onay almak sırayı korur; reddedilen koltuk kaybolmaz, sıradakine geçer. Başkasının danışanı için
+verilen karar 404 döner (kayıt kimlikleri sızmaz).
+
+## 22. Sınav çakışması reddedilir ve tüm çakışmalar birlikte listelenir (F-4)
+**Karar:** Sınav girerken üç çakışma türü kontrol edilir (aynı derslik, aynı öğretim üyesi, ortak öğrenci) ve hepsi tek
+409 yanıtında döner. Kontrol ve ekleme, dönem başına bir danışma kilidi altında aynı transaction'da yapılır.
+**Neden:** Kilitsiz kontrol-sonra-ekleme, iki yöneticinin eşzamanlı çakışan sınav girmesine izin verirdi (T-1'dekiyle
+aynı yarış türü). Zaman aralığı yarı açıktır: 10:00'da biten sınav, 10:00'da başlayanla çakışmaz.
+**Sınırlama:** Öğrenci çakışması yalnızca `enrolled` kayıtlar için bakılır; bekleme listesindekiler hesaba katılmaz.
+
+## 23. İtiraz kabulü notu tek başına değiştirmez (F-5)
+**Karar:** İtiraz kabul edilince öğretim üyesi adına bir düzeltme talebi (`grade_corrections`) açılır; not, ikinci kişi
+(bölüm sekreteri/öğrenci işleri) onaylayana kadar değişmez. Sonuç başına tek açık itiraz olabilir (kısmi UNIQUE dizin).
+**Neden:** İtiraz yolu, T-7'deki çift onay kuralını atlayan bir arka kapı olmamalı.
+
+## 24. Raporlar veritabanında toplanır, GANO dağılımı önbellekten (F-8)
+**Karar:** Başarı, doluluk ve GANO dağılımı SQL toplamalarıyla üretilir; GANO dağılımı `students.gano` önbelleğini
+okur (arka plan işçisi güncel tutar), bu yüzden 12.000 öğrencide bile tek taramadır. `width_bucket` ile aralıklara bölünür;
+4.00 değeri son aralığa dahil edilir. Yalnızca raporlama/öğrenci işleri/bölüm sekreteri görür.
+**Sınırlama:** GANO dağılımı, işçi kuyruğu boşalana kadar birkaç saniye eski olabilir (nihai tutarlılık).

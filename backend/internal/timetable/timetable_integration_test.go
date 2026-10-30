@@ -231,3 +231,99 @@ func TestTimetableAccessAndValidation(t *testing.T) {
 		t.Errorf("öğrenci derslik oluşturdu: %d", code)
 	}
 }
+
+// F-4: sınav takvimi. Oda, öğretim üyesi ve öğrenci çakışmaları reddedilir ve HEPSİ birlikte listelenir.
+func TestExamCalendarRejectsAllConflictTypes(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	// Router'a sınav rotalarını ekle (setup yalnızca ana rotaları bağlar).
+	r := chi.NewRouter()
+	r.Use(e.iss.Authenticate)
+	h := NewHandler(e.pool)
+	h.Routes(r)
+	h.ExamRoutes(r)
+	e.router = r
+
+	secOf := func(code string) int64 {
+		return scan[int64](t, e.pool, `SELECT s.id FROM sections s JOIN courses c ON c.id=s.course_id WHERE c.code=$1`, code)
+	}
+	// Öğrenci hem C0 hem C1 şubesine kayıtlı (öğretim üyeleri farklı: C0→I1, C1→I2).
+	stuUser := user2(t, e, "stu@t")
+	st := scan[int64](t, e.pool, `INSERT INTO students (user_id,student_no,program_id,entry_year) VALUES ($1,'N1',(SELECT id FROM programs LIMIT 1),2024) RETURNING id`, stuUser)
+	for _, c := range []string{"C0", "C1"} {
+		exec(t, e.pool, `INSERT INTO enrollments (section_id, student_id, status) VALUES ($1,$2,'enrolled')`, secOf(c), st)
+	}
+	t0 := time.Date(2026, 1, 12, 9, 0, 0, 0, time.UTC)
+	post := func(code string, start time.Time, room string, mins int) (int, map[string]any) {
+		return e.do("POST", fmt.Sprintf("/sections/%d/exams", secOf(code)), e.reg, auth.RoleRegistrar, map[string]any{
+			"kind": "midterm", "starts_at": start.Format(time.RFC3339), "duration_min": mins, "room": room})
+	}
+
+	if c, b := post("C0", t0, "R1", 60); c != 201 {
+		t.Fatalf("ilk sınav: %d %v", c, b)
+	}
+	kindsOf := func(b map[string]any) map[string]bool {
+		out := map[string]bool{}
+		if er, ok := b["error"].(map[string]any); ok {
+			for _, c := range er["conflicts"].([]any) {
+				out[c.(map[string]any)["kind"].(string)] = true
+			}
+		}
+		return out
+	}
+	// C2 (öğretim üyesi I1, C0 ile aynı): aynı saat + aynı derslik → ROOM ve INSTRUCTOR birlikte.
+	c, b := post("C2", t0.Add(30*time.Minute), "R1", 60)
+	if got := kindsOf(b); c != 409 || !got["ROOM"] || !got["INSTRUCTOR"] {
+		t.Errorf("oda+öğretim üyesi çakışması: %d %v", c, b)
+	}
+	// C1 (I2, ortak öğrenci var), farklı derslik ama çakışan saat → yalnızca STUDENT.
+	c, b = post("C1", t0.Add(15*time.Minute), "R2", 60)
+	if got := kindsOf(b); c != 409 || !got["STUDENT"] || got["ROOM"] || got["INSTRUCTOR"] {
+		t.Errorf("öğrenci çakışması: %d %v", c, b)
+	}
+	// Bitişik saat çakışma değildir (yarı açık aralık): 10:00'da başlayan C1 geçer.
+	if c, b := post("C1", t0.Add(60*time.Minute), "R2", 60); c != 201 {
+		t.Errorf("bitişik sınav: %d %v", c, b)
+	}
+	// Aynı şube+tür ikinci kez: 409.
+	if c, _ := post("C0", t0.Add(5*time.Hour), "R1", 60); c != 409 {
+		t.Errorf("aynı şube+tür tekrar: %d, beklenen 409", c)
+	}
+
+	// Öğrencinin takvimi zamana göre sıralı ve yalnızca kendi şubelerini içerir.
+	tok, _ := e.iss.Access(stuUser, auth.RoleStudent)
+	req := httptest.NewRequest("GET", "/me/exam-schedule", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	e.router.ServeHTTP(rec, req)
+	var sched struct {
+		Items []struct {
+			CourseCode string    `json:"course_code"`
+			StartsAt   time.Time `json:"starts_at"`
+		} `json:"items"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &sched)
+	if len(sched.Items) != 2 || sched.Items[0].CourseCode != "C0" || sched.Items[1].CourseCode != "C1" {
+		t.Errorf("öğrenci sınav takvimi: %s", rec.Body)
+	}
+	// Dönem takvimi herkese açık ve sayfalı; silme yalnızca yönetici.
+	if c, p := e.do("GET", fmt.Sprintf("/terms/%d/exams?limit=1", e.term), e.stu, auth.RoleStudent, nil); c != 200 || p["next_after"] == nil {
+		t.Errorf("dönem takvimi: %d %v", c, p)
+	}
+	if c, _ := e.do("POST", fmt.Sprintf("/sections/%d/exams", secOf("C3")), e.stu, auth.RoleStudent, map[string]any{"kind": "final", "starts_at": t0.Format(time.RFC3339), "duration_min": 60}); c != 403 {
+		t.Errorf("öğrenci sınav girdi: %d", c)
+	}
+	if c, _ := e.do("POST", fmt.Sprintf("/sections/%d/exams", secOf("C3")), e.reg, auth.RoleRegistrar, map[string]any{"kind": "x", "starts_at": t0.Format(time.RFC3339), "duration_min": 60}); c != 400 {
+		t.Errorf("geçersiz tür: %d", c)
+	}
+	exam := scan[int64](t, e.pool, `SELECT min(id) FROM exams`)
+	if c, _ := e.do("DELETE", fmt.Sprintf("/exams/%d", exam), e.reg, auth.RoleRegistrar, nil); c != 204 {
+		t.Errorf("sınav silme: %d", c)
+	}
+	_ = ctx
+}
+
+func user2(t *testing.T, e *env, email string) int64 {
+	t.Helper()
+	return scan[int64](t, e.pool, `INSERT INTO users (email,password_hash,full_name,role) VALUES ($1,'x',$1,'student') RETURNING id`, email)
+}

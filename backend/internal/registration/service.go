@@ -17,6 +17,7 @@ var (
 	ErrRegistrationClosed = errors.New("bu dönem için kayıt kapalı")
 	ErrAlreadyRegistered  = errors.New("öğrenci bu şubeye zaten kayıtlı veya bekleme listesinde")
 	ErrEnrollmentNotFound = errors.New("kayıt bulunamadı")
+	ErrDropPeriodOver     = errors.New("ekle-sil süresi sona erdi")
 )
 
 const (
@@ -115,7 +116,15 @@ func EnrollTx(ctx context.Context, tx pgx.Tx, studentID, sectionID int64) (Enrol
 // DropTx kaydı bırakır. Boşalan koltuk varsa bekleme listesinin ilk öğrencisine
 // AYNI transaction içinde otomatik atanır; arada koltuk "havada" kalmaz.
 // Zaten bırakılmış kayıt için tekrar çağrı zararsızdır (idempotent).
+//
+// Öğrencinin kendi bırakması ekle-sil süresine (terms.drop_deadline) tabidir.
 func DropTx(ctx context.Context, tx pgx.Tx, studentID, enrollmentID int64) (DropResult, error) {
+	return dropTx(ctx, tx, studentID, enrollmentID, true)
+}
+
+// dropTx ortak bırakma mantığıdır. enforceDeadline=false, danışman reddi gibi süreye tabi olmayan
+// idari bırakmalar içindir.
+func dropTx(ctx context.Context, tx pgx.Tx, studentID, enrollmentID int64, enforceDeadline bool) (DropResult, error) {
 	var sectionID, owner int64
 	err := tx.QueryRow(ctx,
 		`SELECT section_id, student_id FROM enrollments WHERE id = $1`, enrollmentID).Scan(&sectionID, &owner)
@@ -138,6 +147,17 @@ func DropTx(ctx context.Context, tx pgx.Tx, studentID, enrollmentID int64) (Drop
 	}
 	if status == StatusDropped {
 		return DropResult{Status: StatusDropped}, nil
+	}
+	if enforceDeadline {
+		var over bool
+		if err := tx.QueryRow(ctx,
+			`SELECT t.drop_deadline IS NOT NULL AND now() > t.drop_deadline
+			   FROM sections s JOIN terms t ON t.id = s.term_id WHERE s.id = $1`, sectionID).Scan(&over); err != nil {
+			return DropResult{}, err
+		}
+		if over {
+			return DropResult{}, ErrDropPeriodOver
+		}
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE enrollments SET status = 'dropped', dropped_at = now() WHERE id = $1`, enrollmentID); err != nil {

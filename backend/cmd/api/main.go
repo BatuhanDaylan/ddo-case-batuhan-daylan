@@ -24,6 +24,7 @@ import (
 	"github.com/batuhan-daylan/uninet/internal/httpx"
 	"github.com/batuhan-daylan/uninet/internal/metrics"
 	"github.com/batuhan-daylan/uninet/internal/registration"
+	"github.com/batuhan-daylan/uninet/internal/reports"
 	"github.com/batuhan-daylan/uninet/internal/timetable"
 )
 
@@ -94,7 +95,7 @@ func run(log *slog.Logger) error {
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: newRouter(pool, iss, authH, academic.NewHandler(pool), registration.NewHandler(pool),
-			gradebook.NewHandler(pool), docH, graduation.NewHandler(pool), timetable.NewHandler(pool)),
+			gradebook.NewHandler(pool), docH, graduation.NewHandler(pool), timetable.NewHandler(pool), reports.NewHandler(pool)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -124,7 +125,7 @@ func run(log *slog.Logger) error {
 
 func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler,
 	acad *academic.Handler, reg *registration.Handler, gb *gradebook.Handler,
-	docs *documents.Handler, grad *graduation.Handler, tt *timetable.Handler) http.Handler {
+	docs *documents.Handler, grad *graduation.Handler, tt *timetable.Handler, rep *reports.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(metrics.Middleware)
@@ -154,10 +155,14 @@ func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler,
 		r.Get("/me", authH.Me)
 		acad.Routes(r)
 		reg.Routes(r)
+		reg.ApprovalRoutes(r)
 		gb.Routes(r)
+		gb.ObjectionRoutes(r)
 		docs.Routes(r)
 		grad.Routes(r)
 		tt.Routes(r)
+		rep.Routes(r)
+		tt.ExamRoutes(r)
 	})
 	return r
 }
