@@ -106,7 +106,7 @@ func EnrollTx(ctx context.Context, tx pgx.Tx, studentID, sectionID int64) (Enrol
 	}
 
 	err = audit.Write(ctx, tx, audit.Entry{
-		Action: "enrollment." + status, Entity: "enrollment", EntityID: strconv.FormatInt(res.EnrollmentID, 10),
+		ActorID: actorOf(ctx, tx, studentID), Action: "enrollment." + status, Entity: "enrollment", EntityID: strconv.FormatInt(res.EnrollmentID, 10),
 		New: map[string]any{"section_id": sectionID, "student_id": studentID, "status": status},
 	})
 	return res, err
@@ -159,7 +159,7 @@ func DropTx(ctx context.Context, tx pgx.Tx, studentID, enrollmentID int64) (Drop
 			}
 			res.PromotedEnrollmentID = &next
 			if err := audit.Write(ctx, tx, audit.Entry{
-				Action: "enrollment.promoted", Entity: "enrollment", EntityID: strconv.FormatInt(next, 10),
+				ActorID: actorOf(ctx, tx, studentID), Action: "enrollment.promoted", Entity: "enrollment", EntityID: strconv.FormatInt(next, 10),
 				Old: map[string]string{"status": StatusWaitlisted}, New: map[string]string{"status": StatusEnrolled},
 			}); err != nil {
 				return DropResult{}, err
@@ -175,8 +175,18 @@ func DropTx(ctx context.Context, tx pgx.Tx, studentID, enrollmentID int64) (Drop
 	}
 
 	err = audit.Write(ctx, tx, audit.Entry{
-		Action: "enrollment.dropped", Entity: "enrollment", EntityID: strconv.FormatInt(enrollmentID, 10),
+		ActorID: actorOf(ctx, tx, studentID), Action: "enrollment.dropped", Entity: "enrollment", EntityID: strconv.FormatInt(enrollmentID, 10),
 		Old: map[string]string{"status": status}, New: map[string]string{"status": StatusDropped},
 	})
 	return res, err
+}
+
+// actorOf, öğrencinin kullanıcı kimliğini verir; denetim kaydında "kim yaptı" alanı için.
+// Bulunamazsa nil döner (denetim yine yazılır, yalnızca aktör boş kalır).
+func actorOf(ctx context.Context, tx pgx.Tx, studentID int64) *int64 {
+	var uid int64
+	if err := tx.QueryRow(ctx, `SELECT user_id FROM students WHERE id = $1`, studentID).Scan(&uid); err != nil {
+		return nil
+	}
+	return &uid
 }

@@ -106,10 +106,14 @@ func (h *Handler) addMeeting(w http.ResponseWriter, r *http.Request) {
 			"day 1-7 olmalı; 0 <= start_min < end_min <= 1440 olmalı")
 		return
 	}
-	var id int64
-	if err := h.pool.QueryRow(r.Context(),
-		`INSERT INTO section_meetings (section_id, day, start_min, end_min) VALUES ($1, $2, $3, $4) RETURNING id`,
-		sectionID, in.Day, in.StartMin, in.EndMin).Scan(&id); err != nil {
+	id, err := h.insertAudited(r, "section_meeting", map[string]int{"day": in.Day, "start_min": in.StartMin, "end_min": in.EndMin},
+		func(tx pgx.Tx) (int64, error) {
+			var id int64
+			return id, tx.QueryRow(r.Context(),
+				`INSERT INTO section_meetings (section_id, day, start_min, end_min) VALUES ($1, $2, $3, $4) RETURNING id`,
+				sectionID, in.Day, in.StartMin, in.EndMin).Scan(&id)
+		})
+	if err != nil {
 		if !httpx.DBError(w, err) {
 			httpx.Internal(w, err)
 		}
@@ -328,9 +332,13 @@ func (h *Handler) createTerm(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "validation_error", "code ve name zorunlu")
 		return
 	}
-	err := h.pool.QueryRow(r.Context(),
-		`INSERT INTO terms (code, name, registration_open) VALUES ($1, $2, $3) RETURNING id`,
-		in.Code, in.Name, in.RegistrationOpen).Scan(&in.ID)
+	id, err := h.insertAudited(r, "term", in, func(tx pgx.Tx) (int64, error) {
+		var id int64
+		return id, tx.QueryRow(r.Context(),
+			`INSERT INTO terms (code, name, registration_open) VALUES ($1, $2, $3) RETURNING id`,
+			in.Code, in.Name, in.RegistrationOpen).Scan(&id)
+	})
+	in.ID = id
 	if err != nil {
 		if !httpx.DBError(w, err) {
 			httpx.Internal(w, err)
@@ -475,10 +483,14 @@ func (h *Handler) createSection(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "validation_error", "term_id, course_id, code ve capacity>0 zorunlu")
 		return
 	}
-	err := h.pool.QueryRow(r.Context(),
-		`INSERT INTO sections (term_id, course_id, code, instructor_id, capacity)
-		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		in.TermID, in.CourseID, in.Code, in.InstructorID, in.Capacity).Scan(&in.ID)
+	id, err := h.insertAudited(r, "section", in, func(tx pgx.Tx) (int64, error) {
+		var id int64
+		return id, tx.QueryRow(r.Context(),
+			`INSERT INTO sections (term_id, course_id, code, instructor_id, capacity)
+			 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+			in.TermID, in.CourseID, in.Code, in.InstructorID, in.Capacity).Scan(&id)
+	})
+	in.ID = id
 	if err != nil {
 		if !httpx.DBError(w, err) {
 			httpx.Internal(w, err)
@@ -487,4 +499,26 @@ func (h *Handler) createSection(w http.ResponseWriter, r *http.Request) {
 	}
 	in.EnrolledCount, in.WaitlistSize = 0, 0
 	httpx.JSON(w, http.StatusCreated, in)
+}
+
+// insertAudited kaydı ve denetim satırını tek transaction'da yazar; ikisinden biri başarısız olursa hiçbiri kalmaz.
+func (h *Handler) insertAudited(r *http.Request, entity string, newValue any, insert func(tx pgx.Tx) (int64, error)) (int64, error) {
+	ctx := r.Context()
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	id, err := insert(tx)
+	if err != nil {
+		return 0, err
+	}
+	p, _ := auth.PrincipalFrom(ctx)
+	if err := audit.Write(ctx, tx, audit.Entry{
+		ActorID: &p.UserID, Action: entity + ".create", Entity: entity, EntityID: strconv.FormatInt(id, 10),
+		New: newValue, IP: r.RemoteAddr,
+	}); err != nil {
+		return 0, err
+	}
+	return id, tx.Commit(ctx)
 }

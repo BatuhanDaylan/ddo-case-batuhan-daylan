@@ -106,3 +106,21 @@ Kuyruğa yazarken `ON CONFLICT DO UPDATE` kullanılır.
 kaybettirirdi; `DO UPDATE` satırı işçi bitince yeniden oluşturur. İş tekrar çalışsa aynı değeri yazar (testli).
 Tekrar-alma politikası (`last`/`best`) program başına seçilir; değişince programdaki tüm öğrenciler kuyruğa girer.
 Kayıt doğrulayıcının AKTS limiti de GANO'yu aynı `LoadGANO` fonksiyonundan alır, böylece tanım tektir.
+
+## 16. Belge imzası: HMAC(id ‖ içerik özeti), kod = "id.imza", anahtar JWT'den ayrı
+**Karar:** Transkript düzenlenirken içerik (JSON bayt dizisi) `documents.snapshot`'a TEXT olarak dondurulur
+(JSONB anahtarları yeniden sıralayacağı için özet tutmazdı). Doğrulama kodu `"<id>.<HMAC-SHA256>"`'dır; HMAC
+`"uninet-doc-v1\n<id>\n<içerik sha256>"` üzerinden, ayrı bir `DOC_SIGNING_KEY` ile hesaplanır. QR bu kodu içeren
+`/verify/{kod}` adresini taşır.
+**Neden:** İçerik özetini imzaya katmak, veritabanı sonradan kurcalansa bile doğrulamayı başarısız kılar
+(testle kanıtlandı: tetikleyiciler devre dışı bırakılıp içerik ve özet birlikte değiştirildiğinde imza tutmaz;
+saldırgan anahtarı bilmeden geçerli imza üretemez). Belge kimliğini katmak, imzanın başka belge için
+yeniden kullanılmasını engeller. Ayrı anahtar: JWT sırrı sızarsa belgeler sahtelenemez ve tersi.
+**Gizlilik:** `/verify` herkese açıktır; her başarısızlık aynı 404'ü verir ("yok" ile "imza tutmuyor" ayırt edilmez).
+Başarılıysa yalnızca doğrulayıcının basılı belgeyle karşılaştıracağı özet döner.
+**Bilinen sınırlama:** İptal (revocation) ve doğrulama ucunda hız sınırı yoktur.
+
+## 17. PDF'te gömülü DejaVu yazı tipi
+**Karar:** PDF standart yazı tipleri yerine `go:embed` ile gömülen DejaVu Sans kullanır.
+**Neden:** PDF'in çekirdek yazı tipleri cp1252'dir; ş, ğ, İ, ı gibi Türkçe harfleri basamaz. İmaj boyutuna
+~1,4 MB ekler, ama harici dosya/çalışma zamanı bağımlılığı olmaz.

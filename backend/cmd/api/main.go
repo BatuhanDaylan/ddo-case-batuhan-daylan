@@ -18,6 +18,7 @@ import (
 	"github.com/batuhan-daylan/uninet/internal/auth"
 	"github.com/batuhan-daylan/uninet/internal/config"
 	"github.com/batuhan-daylan/uninet/internal/db"
+	"github.com/batuhan-daylan/uninet/internal/documents"
 	"github.com/batuhan-daylan/uninet/internal/gradebook"
 	"github.com/batuhan-daylan/uninet/internal/httpx"
 	"github.com/batuhan-daylan/uninet/internal/registration"
@@ -72,13 +73,19 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	signer, err := documents.NewSigner(cfg.DocSigningKey)
+	if err != nil {
+		return err
+	}
+	docH := documents.NewHandler(pool, documents.NewService(pool, signer, cfg.PublicBaseURL))
+
 	// GANO yeniden hesaplama işçisi; ctx iptal edilince (kapanış sinyali) durur.
 	go gradebook.RunWorker(ctx, pool, time.Second, log)
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: newRouter(pool, iss, authH, academic.NewHandler(pool), registration.NewHandler(pool),
-			gradebook.NewHandler(pool)),
+			gradebook.NewHandler(pool), docH),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -107,7 +114,8 @@ func run(log *slog.Logger) error {
 }
 
 func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler,
-	acad *academic.Handler, reg *registration.Handler, gb *gradebook.Handler) http.Handler {
+	acad *academic.Handler, reg *registration.Handler, gb *gradebook.Handler,
+	docs *documents.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -121,6 +129,7 @@ func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler,
 	})
 
 	r.Get("/health", healthHandler(pool))
+	docs.PublicRoutes(r) // GET /verify/{code}: kimlik gerektirmez, kodun HMAC imzası yetkidir
 
 	r.Route("/auth", func(r chi.Router) {
 		r.Post("/login", authH.Login)
@@ -135,6 +144,7 @@ func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler,
 		acad.Routes(r)
 		reg.Routes(r)
 		gb.Routes(r)
+		docs.Routes(r)
 	})
 	return r
 }
