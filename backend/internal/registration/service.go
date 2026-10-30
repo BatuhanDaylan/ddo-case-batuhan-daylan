@@ -7,10 +7,16 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/batuhan-daylan/uninet/internal/audit"
 	"github.com/batuhan-daylan/uninet/internal/rules"
 )
+
+var tracer = otel.Tracer("uninet/registration")
 
 var (
 	ErrSectionNotFound    = errors.New("şube bulunamadı")
@@ -50,67 +56,141 @@ type DropResult struct {
 // Kurallar şube kilidinden ÖNCE değerlendirilir: ağır okumalar kritik bölümü uzatmaz.
 // Öğrenci kilidi, aynı öğrencinin iki şubeye eşzamanlı kaydolarak AKTS limitini veya çakışma
 // kuralını aşmasını önler. DropTx öğrenci kilidi almadığı için kilit sırası döngü oluşturmaz.
+//
+// İzleme (OpenTelemetry): akış "registration.enroll" kök span'i ve her aşama için bir alt span üretir
+// (öğrenci kilidi, kural yükleme/denetimi, şube kilidi, kayıt ekleme, denetim). Kilit beklemesi
+// db.lock_section süresinde görünür; iş sonuçları (reddedilen kural vb.) hata değil, öznitelik olarak işlenir.
 func EnrollTx(ctx context.Context, tx pgx.Tx, studentID, sectionID int64) (EnrollResult, error) {
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM students WHERE id = $1 FOR UPDATE`, studentID); err != nil {
-		return EnrollResult{}, err
+	ctx, root := tracer.Start(ctx, "registration.enroll", trace.WithAttributes(
+		attribute.Int64("student.id", studentID), attribute.Int64("section.id", sectionID)))
+	defer root.End()
+
+	res, outcome, err := enrollSteps(ctx, tx, studentID, sectionID)
+	root.SetAttributes(attribute.String("enrollment.outcome", outcome))
+	if err != nil && outcome == "error" {
+		root.RecordError(err)
+		root.SetStatus(codes.Error, err.Error())
+	}
+	return res, err
+}
+
+// stage bir aşamayı alt span olarak sarar. Beklenmeyen hata span'e kaydedilir.
+func stage[T any](ctx context.Context, name string, fn func(ctx context.Context) (T, error)) (T, error) {
+	ctx, sp := tracer.Start(ctx, name)
+	defer sp.End()
+	v, err := fn(ctx)
+	if err != nil && !isBusinessError(err) {
+		sp.RecordError(err)
+		sp.SetStatus(codes.Error, err.Error())
+	}
+	return v, err
+}
+
+// isBusinessError beklenen iş sonuçlarını (kayıt kapalı, zaten kayıtlı, kural ihlali...) ayırt eder.
+func isBusinessError(err error) bool {
+	var rv *RuleViolationsError
+	return errors.Is(err, ErrRegistrationClosed) || errors.Is(err, ErrAlreadyRegistered) ||
+		errors.Is(err, ErrSectionNotFound) || errors.As(err, &rv)
+}
+
+func enrollSteps(ctx context.Context, tx pgx.Tx, studentID, sectionID int64) (EnrollResult, string, error) {
+	fail := func(err error) (EnrollResult, string, error) {
+		switch {
+		case isBusinessError(err):
+			return EnrollResult{}, "rejected", err
+		default:
+			return EnrollResult{}, "error", err
+		}
 	}
 
-	ld, err := loadInput(ctx, tx, studentID, []int64{sectionID})
+	if _, err := stage(ctx, "db.lock_student", func(ctx context.Context) (struct{}, error) {
+		_, err := tx.Exec(ctx, `SELECT 1 FROM students WHERE id = $1 FOR UPDATE`, studentID)
+		return struct{}{}, err
+	}); err != nil {
+		return fail(err)
+	}
+
+	ld, err := stage(ctx, "rules.load_input", func(ctx context.Context) (loaded, error) {
+		return loadInput(ctx, tx, studentID, []int64{sectionID})
+	})
 	if err != nil {
-		return EnrollResult{}, err
+		return fail(err)
 	}
 	if !ld.TermOpen {
-		return EnrollResult{}, ErrRegistrationClosed
+		return fail(ErrRegistrationClosed)
 	}
 	for _, c := range ld.Input.Current {
 		if c.SectionID == sectionID {
-			return EnrollResult{}, ErrAlreadyRegistered
+			return fail(ErrAlreadyRegistered)
 		}
 	}
-	if rep := rules.Check(ld.Input); !rep.OK() {
-		return EnrollResult{}, &RuleViolationsError{Report: rep}
-	}
-
-	var capacity, enrolled int
-	err = tx.QueryRow(ctx,
-		`SELECT capacity, enrolled_count FROM sections WHERE id = $1 FOR UPDATE`, sectionID).Scan(&capacity, &enrolled)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return EnrollResult{}, ErrSectionNotFound
-	}
-	if err != nil {
-		return EnrollResult{}, err
-	}
-
-	status := StatusWaitlisted
-	if enrolled < capacity {
-		status = StatusEnrolled
-		if _, err := tx.Exec(ctx,
-			`UPDATE sections SET enrolled_count = enrolled_count + 1 WHERE id = $1`, sectionID); err != nil {
-			return EnrollResult{}, err
+	if _, err := stage(ctx, "rules.check", func(context.Context) (struct{}, error) {
+		if rep := rules.Check(ld.Input); !rep.OK() {
+			return struct{}{}, &RuleViolationsError{Report: rep}
 		}
+		return struct{}{}, nil
+	}); err != nil {
+		return fail(err)
 	}
 
-	res := EnrollResult{Status: status}
-	if err := tx.QueryRow(ctx,
-		`INSERT INTO enrollments (section_id, student_id, status) VALUES ($1, $2, $3) RETURNING id`,
-		sectionID, studentID, status).Scan(&res.EnrollmentID); err != nil {
-		return EnrollResult{}, err
+	type decision struct {
+		status string
 	}
-	if status == StatusWaitlisted {
-		var pos int
-		if err := tx.QueryRow(ctx,
-			`SELECT count(*) FROM enrollments WHERE section_id = $1 AND status = 'waitlisted' AND id <= $2`,
-			sectionID, res.EnrollmentID).Scan(&pos); err != nil {
-			return EnrollResult{}, err
+	dec, err := stage(ctx, "db.lock_section", func(ctx context.Context) (decision, error) {
+		var capacity, enrolled int
+		err := tx.QueryRow(ctx,
+			`SELECT capacity, enrolled_count FROM sections WHERE id = $1 FOR UPDATE`, sectionID).Scan(&capacity, &enrolled)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return decision{}, ErrSectionNotFound
 		}
-		res.WaitlistPosition = &pos
-	}
-
-	err = audit.Write(ctx, tx, audit.Entry{
-		ActorID: actorOf(ctx, tx, studentID), Action: "enrollment." + status, Entity: "enrollment", EntityID: strconv.FormatInt(res.EnrollmentID, 10),
-		New: map[string]any{"section_id": sectionID, "student_id": studentID, "status": status},
+		if err != nil {
+			return decision{}, err
+		}
+		if enrolled < capacity {
+			if _, err := tx.Exec(ctx,
+				`UPDATE sections SET enrolled_count = enrolled_count + 1 WHERE id = $1`, sectionID); err != nil {
+				return decision{}, err
+			}
+			return decision{StatusEnrolled}, nil
+		}
+		return decision{StatusWaitlisted}, nil
 	})
-	return res, err
+	if err != nil {
+		return fail(err)
+	}
+
+	res, err := stage(ctx, "db.insert_enrollment", func(ctx context.Context) (EnrollResult, error) {
+		res := EnrollResult{Status: dec.status}
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO enrollments (section_id, student_id, status) VALUES ($1, $2, $3) RETURNING id`,
+			sectionID, studentID, dec.status).Scan(&res.EnrollmentID); err != nil {
+			return EnrollResult{}, err
+		}
+		if dec.status == StatusWaitlisted {
+			var pos int
+			if err := tx.QueryRow(ctx,
+				`SELECT count(*) FROM enrollments WHERE section_id = $1 AND status = 'waitlisted' AND id <= $2`,
+				sectionID, res.EnrollmentID).Scan(&pos); err != nil {
+				return EnrollResult{}, err
+			}
+			res.WaitlistPosition = &pos
+		}
+		return res, nil
+	})
+	if err != nil {
+		return fail(err)
+	}
+
+	if _, err := stage(ctx, "audit.write", func(ctx context.Context) (struct{}, error) {
+		return struct{}{}, audit.Write(ctx, tx, audit.Entry{
+			ActorID: actorOf(ctx, tx, studentID), Action: "enrollment." + dec.status, Entity: "enrollment",
+			EntityID: strconv.FormatInt(res.EnrollmentID, 10),
+			New:      map[string]any{"section_id": sectionID, "student_id": studentID, "status": dec.status},
+		})
+	}); err != nil {
+		return fail(err)
+	}
+	return res, dec.status, nil
 }
 
 // DropTx kaydı bırakır. Boşalan koltuk varsa bekleme listesinin ilk öğrencisine

@@ -1,0 +1,781 @@
+openapi: 3.0.3
+info:
+  title: UniNet — Üniversite Öğrenci Bilgi Sistemi API
+  version: 1.0.0
+  description: |
+    Kayıt, not, mezuniyet, ders programı ve imzalı belge işlemleri için REST API.
+
+    **Kimlik doğrulama:** `POST /auth/login` ile alınan `access_token`, `Authorization: Bearer <token>` başlığıyla gönderilir
+    (15 dk). `refresh_token` tek kullanımlıktır (her yenilemede döner); kullanılmış bir token tekrar gelirse kullanıcının
+    tüm oturumları kapatılır.
+
+    **Hata biçimi:** her hata `{"error":{"code","message"}}`; kural ihlali (422) ve çakışma (409) yanıtları ek olarak
+    `violations` / `conflicts` listesi taşır.
+
+    **Sayfalama:** liste uç noktaları keyset sayfalar: `?limit=<1..200>&after=<önceki next_after>`; yanıt `{items, next_after}`.
+
+    **İdempotans:** durum değiştiren kritik `POST /sections/{id}/enrollments` isteği `Idempotency-Key` başlığı ister; aynı
+    anahtar aynı yanıtı döner (`Idempotent-Replayed: true`).
+
+    **Roller:** `student`, `instructor`, `advisor`, `dept_secretary`, `registrar`, `reporting`. Her işlemin `x-roles` alanı
+    izin verilen rolleri gösterir; yetkisiz erişim sunucuda 401/403 ile reddedilir.
+servers:
+  - url: http://localhost:8080
+    description: Yerel (docker compose)
+tags:
+  - { name: Sistem, description: Sağlık, metrik, belge }
+  - { name: Kimlik, description: Giriş, yenileme, çıkış }
+  - { name: Akademik yapı, description: Fakülte → bölüm → program → ders → müfredat sürümleri (F-1, T-3) }
+  - { name: Dönem ve şube, description: Dönem, şube, derslik, ders saatleri (F-2) }
+  - { name: Kayıt, description: Ders kaydı, bekleme listesi, onay, kural doğrulayıcı (F-3, T-1, T-2) }
+  - { name: Program ve sınav, description: Ders programı çözücü ve sınav takvimi (F-4, T-5) }
+  - { name: Not, description: Not girişi, ilan, düzeltme, itiraz, GANO (F-5, T-4, T-7) }
+  - { name: Belge, description: İmzalı transkript ve doğrulama (F-6, T-7) }
+  - { name: Mezuniyet, description: Mezuniyet kuralları ve denetimi (F-7, T-6) }
+  - { name: Rapor, description: Toplu raporlar (F-8) }
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [Sistem]
+      summary: Sağlık (veritabanı bağlantısı dahil)
+      security: []
+      x-roles: [public]
+      responses:
+        "200": { description: API ve veritabanı yanıt veriyor, content: { application/json: { schema: { type: object, properties: { status: { type: string }, database: { type: string } } } } } }
+        "503": { $ref: "#/components/responses/Error" }
+  /metrics:
+    get:
+      tags: [Sistem]
+      summary: Prometheus metrikleri
+      description: HTTP istek sayısı/süresi (yol deseniyle etiketli), eşzamanlı istek sayısı ve kayıt deneme sonuçları. Üretimde ağ düzeyinde kısıtlanmalıdır.
+      security: []
+      x-roles: [public]
+      responses:
+        "200": { description: Prometheus metin biçimi, content: { text/plain: { schema: { type: string } } } }
+  /openapi.yaml:
+    get:
+      tags: [Sistem]
+      summary: Bu belge
+      security: []
+      x-roles: [public]
+      responses:
+        "200": { description: OpenAPI 3 belgesi, content: { application/yaml: { schema: { type: string } } } }
+  /verify/{code}:
+    get:
+      tags: [Belge]
+      summary: İmzalı belgeyi doğrula (kimlik gerekmez)
+      description: Kod `<belge id>.<HMAC>` biçimindedir ve QR kodda taşınır. Her başarısızlık (yok, bozuk, imza tutmuyor, içerik değişmiş) aynı 404'ü döner.
+      security: []
+      x-roles: [public]
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Belge geçerli, content: { application/json: { schema: { $ref: "#/components/schemas/VerifyResult" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /auth/login:
+    post:
+      tags: [Kimlik]
+      summary: Giriş (argon2id doğrulama; eşzamanlı doğrulama sayısı sınırlıdır)
+      security: []
+      x-roles: [public]
+      requestBody: { $ref: "#/components/requestBodies/Login" }
+      responses:
+        "200": { description: Token çifti, content: { application/json: { schema: { $ref: "#/components/schemas/Tokens" } } } }
+        "400": { $ref: "#/components/responses/Validation" }
+        "401": { $ref: "#/components/responses/Error" }
+  /auth/refresh:
+    post:
+      tags: [Kimlik]
+      summary: Refresh token ile yeni çift (rotasyon; yeniden kullanım tüm oturumları kapatır)
+      security: []
+      x-roles: [public]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [refresh_token], properties: { refresh_token: { type: string } } } } }
+      responses:
+        "200": { description: Yeni token çifti, content: { application/json: { schema: { $ref: "#/components/schemas/Tokens" } } } }
+        "401": { $ref: "#/components/responses/Error" }
+  /auth/logout:
+    post:
+      tags: [Kimlik]
+      summary: Refresh token'ı iptal et
+      security: []
+      x-roles: [public]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, properties: { refresh_token: { type: string } } } } }
+      responses:
+        "204": { description: Çıkış yapıldı }
+  /me:
+    get:
+      tags: [Kimlik]
+      summary: Oturumdaki kullanıcı (öğrenciyse student_id dahil)
+      x-roles: [all]
+      responses:
+        "200": { description: Kullanıcı, content: { application/json: { schema: { $ref: "#/components/schemas/Me" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /faculties:
+    get:
+      tags: [Akademik yapı]
+      summary: Fakülteler
+      x-roles: [all]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }]
+      responses: { "200": { $ref: "#/components/responses/Page" }, "401": { $ref: "#/components/responses/Unauthorized" } }
+    post:
+      tags: [Akademik yapı]
+      summary: Fakülte oluştur (denetime yazılır)
+      x-roles: [registrar, dept_secretary]
+      requestBody: { $ref: "#/components/requestBodies/CodeName" }
+      responses: { "201": { description: Oluşturuldu }, "400": { $ref: "#/components/responses/Validation" }, "403": { $ref: "#/components/responses/Forbidden" }, "409": { $ref: "#/components/responses/Error" } }
+  /departments:
+    get:
+      tags: [Akademik yapı]
+      summary: Bölümler (?faculty_id= süzgeci)
+      x-roles: [all]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }, { name: faculty_id, in: query, schema: { type: integer } }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+    post:
+      tags: [Akademik yapı]
+      summary: Bölüm oluştur
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [faculty_id, code, name], properties: { faculty_id: { type: integer }, code: { type: string }, name: { type: string } } } } }
+      responses: { "201": { description: Oluşturuldu }, "403": { $ref: "#/components/responses/Forbidden" }, "422": { $ref: "#/components/responses/Error" } }
+  /programs:
+    get:
+      tags: [Akademik yapı]
+      summary: Programlar (?department_id= süzgeci)
+      x-roles: [all]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }, { name: department_id, in: query, schema: { type: integer } }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+    post:
+      tags: [Akademik yapı]
+      summary: Program oluştur
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [department_id, code, name, total_ects_required], properties: { department_id: { type: integer }, code: { type: string }, name: { type: string }, total_ects_required: { type: integer } } } } }
+      responses: { "201": { description: Oluşturuldu }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /courses:
+    get:
+      tags: [Akademik yapı]
+      summary: Dersler (?department_id= süzgeci)
+      x-roles: [all]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }, { name: department_id, in: query, schema: { type: integer } }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+    post:
+      tags: [Akademik yapı]
+      summary: Ders oluştur
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [code, name, ects], properties: { code: { type: string }, name: { type: string }, ects: { type: integer, minimum: 1, maximum: 60 }, department_id: { type: integer, nullable: true } } } } }
+      responses: { "201": { description: Oluşturuldu }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /courses/{id}/prerequisites:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Akademik yapı]
+      summary: Ön koşul ifadesini oku
+      x-roles: [all]
+      responses: { "200": { description: "`{course_id, expr}`; ön koşul yoksa expr null" } }
+    put:
+      tags: [Akademik yapı]
+      summary: Ön koşul tanımla (A ve (B veya C)); döngü reddedilir
+      description: "İfade ağacı `{op: and|or, args: [...]}` ya da yaprak `{course_id}`. Grafik değişiklikleri danışma kilidi altında yapılır; döngü 422 `prerequisite_cycle` ve döngü yolunu döner."
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [expr], properties: { expr: { $ref: "#/components/schemas/PrereqExpr" } } } } }
+      responses: { "200": { description: Kaydedildi }, "400": { $ref: "#/components/responses/Validation" }, "422": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Akademik yapı]
+      summary: Ön koşulu kaldır
+      x-roles: [registrar, dept_secretary]
+      responses: { "204": { description: Kaldırıldı }, "404": { $ref: "#/components/responses/NotFound" } }
+  /programs/{id}/curriculum-versions:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Akademik yapı]
+      summary: Programın müfredat sürümleri
+      x-roles: [all]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+    post:
+      tags: [Akademik yapı]
+      summary: Yeni müfredat sürümü (eskiler değişmez); ön koşul grafiği döngüsüzse kaydedilir
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [effective_year, courses], properties: { effective_year: { type: integer }, courses: { type: array, items: { type: object, properties: { course_id: { type: integer }, semester: { type: integer, minimum: 1, maximum: 12 }, kind: { type: string, enum: [required, elective] } } } } } } } }
+      responses: { "201": { description: Oluşturuldu }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" } }
+  /curriculum-versions/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Akademik yapı]
+      summary: Müfredat sürümü ve dersleri
+      x-roles: [all]
+      responses: { "200": { description: Sürüm }, "404": { $ref: "#/components/responses/NotFound" } }
+  /course-equivalences:
+    get:
+      tags: [Akademik yapı]
+      summary: Denklikler ("X yerine Y sayılır")
+      x-roles: [all]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+    post:
+      tags: [Akademik yapı]
+      summary: Denklik ekle (tek seviyeli)
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [course_id, substitute_course_id], properties: { course_id: { type: integer }, substitute_course_id: { type: integer } } } } }
+      responses: { "201": { description: Eklendi }, "400": { $ref: "#/components/responses/Validation" }, "409": { $ref: "#/components/responses/Error" } }
+  /course-equivalences/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    delete:
+      tags: [Akademik yapı]
+      summary: Denkliği kaldır
+      x-roles: [registrar, dept_secretary]
+      responses: { "204": { description: Kaldırıldı }, "404": { $ref: "#/components/responses/NotFound" } }
+  /students/{id}/curriculum:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Akademik yapı]
+      summary: Öğrencinin giriş yılındaki müfredatı (sonradan açılan sürümlerden etkilenmez)
+      description: Öğrenci yalnızca kendisini, danışman danışanlarını; öğrenci işleri ve bölüm sekreteri tümünü görür.
+      x-roles: [student, advisor, registrar, dept_secretary]
+      responses: { "200": { description: Sürüm }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" } }
+  /students/{id}/required-courses:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Akademik yapı]
+      summary: Zaman yolculuğu — öğrencinin as_of yılı itibarıyla alması gereken dersler
+      description: Müfredat giriş yılına göre çözülür; as_of yalnızca öğretim yılını ve vadeyi (overdue/current/future) belirler. Her ders için durum (passed/exempt/equivalent/pending).
+      x-roles: [student, advisor, registrar, dept_secretary]
+      parameters: [{ name: as_of, in: query, schema: { type: integer, minimum: 1990, maximum: 2100 } }]
+      responses: { "200": { description: Rapor }, "400": { $ref: "#/components/responses/Validation" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /students/{id}/exemptions:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Akademik yapı]
+      summary: Muafiyet ver (notsuz, GANO'ya girmez)
+      x-roles: [registrar]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [course_id, term_id], properties: { course_id: { type: integer }, term_id: { type: integer } } } } }
+      responses: { "201": { description: Verildi }, "403": { $ref: "#/components/responses/Forbidden" } }
+
+  /terms:
+    get:
+      tags: [Dönem ve şube]
+      summary: Dönemler
+      x-roles: [all]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+    post:
+      tags: [Dönem ve şube]
+      summary: Dönem oluştur
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [code, name], properties: { code: { type: string }, name: { type: string }, registration_open: { type: boolean } } } } }
+      responses: { "201": { description: Oluşturuldu }, "409": { $ref: "#/components/responses/Error" } }
+  /terms/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    patch:
+      tags: [Dönem ve şube]
+      summary: Kayıt dönemini aç/kapat (eski/yeni değer denetime yazılır)
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [registration_open], properties: { registration_open: { type: boolean } } } } }
+      responses: { "200": { description: Güncellendi }, "404": { $ref: "#/components/responses/NotFound" } }
+  /terms/{id}/drop-deadline:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    put:
+      tags: [Dönem ve şube]
+      summary: Ekle-sil süresini ayarla (null = sınır yok)
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, properties: { deadline: { type: string, format: date-time, nullable: true } } } } }
+      responses: { "200": { description: Ayarlandı }, "404": { $ref: "#/components/responses/NotFound" } }
+  /sections:
+    get:
+      tags: [Dönem ve şube]
+      summary: Şubeler (kontenjan, kayıtlı, bekleyen, ders bilgisi)
+      x-roles: [all]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }, { name: term_id, in: query, schema: { type: integer } }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+    post:
+      tags: [Dönem ve şube]
+      summary: Şube oluştur
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [term_id, course_id, code, capacity], properties: { term_id: { type: integer }, course_id: { type: integer }, code: { type: string }, capacity: { type: integer, minimum: 1 }, instructor_id: { type: integer, nullable: true } } } } }
+      responses: { "201": { description: Oluşturuldu }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" } }
+  /sections/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Dönem ve şube]
+      summary: Şube ayrıntısı
+      x-roles: [all]
+      responses: { "200": { description: Şube }, "404": { $ref: "#/components/responses/NotFound" } }
+  /sections/{id}/meetings:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Dönem ve şube]
+      summary: Şubeye ders saati ekle (gün 1=Pzt, dakika)
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [day, start_min, end_min], properties: { day: { type: integer, minimum: 1, maximum: 7 }, start_min: { type: integer }, end_min: { type: integer } } } } }
+      responses: { "201": { description: Eklendi }, "400": { $ref: "#/components/responses/Validation" } }
+  /rooms:
+    get:
+      tags: [Dönem ve şube]
+      summary: Derslikler
+      x-roles: [all]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+    post:
+      tags: [Dönem ve şube]
+      summary: Derslik oluştur
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [code, capacity, kind], properties: { code: { type: string }, capacity: { type: integer, minimum: 1 }, kind: { type: string, enum: [lecture, lab, amphi] } } } } }
+      responses: { "201": { description: Oluşturuldu }, "409": { $ref: "#/components/responses/Error" } }
+  /instructors/{id}/unavailability:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    put:
+      tags: [Dönem ve şube]
+      summary: Öğretim üyesinin müsait olmadığı saatlerin tamamını değiştir
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [slots], properties: { slots: { type: array, items: { type: object, properties: { day: { type: integer }, slot: { type: integer } } } } } } } }
+      responses: { "200": { description: Ayarlandı }, "404": { $ref: "#/components/responses/NotFound" } }
+
+  /sections/{id}/enrollments:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Kayıt]
+      summary: Ders kaydı (T-1) — kontenjan aşılmaz, doluysa bekleme listesi
+      description: |
+        Şube satır kilidi altında atomik çalışır; bekleme sırası kilit alma sırasıdır (adil). Kurallar (ön koşul, çakışma, tekrar, AKTS)
+        şube kilidinden önce denetlenir ve ihlallerin HEPSİ `422 rule_violation` içinde listelenir.
+      x-roles: [student]
+      parameters: [{ name: Idempotency-Key, in: header, required: true, schema: { type: string, maxLength: 255 } }]
+      responses:
+        "201": { description: "`{enrollment_id, status: enrolled|waitlisted, waitlist_position}`", headers: { Idempotent-Replayed: { schema: { type: string }, description: Yanıt önceki istekten tekrarlandıysa true } } }
+        "400": { $ref: "#/components/responses/Validation" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { description: Kural ihlalleri (hepsi birlikte), content: { application/json: { schema: { $ref: "#/components/schemas/RuleViolations" } } } }
+  /enrollments/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    delete:
+      tags: [Kayıt]
+      summary: Kaydı bırak (boşalan koltuk bekleyen ilk kişiye otomatik atanır; ekle-sil süresine tabi)
+      x-roles: [student]
+      responses: { "200": { description: "`{status, promoted_enrollment_id?}`" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Error" } }
+  /me/enrollments:
+    get:
+      tags: [Kayıt]
+      summary: Kayıtlarım (durum, bekleme sırası, danışman onayı)
+      x-roles: [student]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+  /me/enrollments/validate:
+    post:
+      tags: [Kayıt]
+      summary: Önerilen şubeleri denetle (hiçbir şey yazmaz; tüm ihlaller birlikte)
+      x-roles: [student]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [section_ids], properties: { section_ids: { type: array, minItems: 1, maxItems: 20, items: { type: integer } } } } } }
+      responses: { "200": { description: "`{valid, violations[], total_ects, max_ects, gano}`" }, "404": { $ref: "#/components/responses/NotFound" } }
+  /advisor/enrollments:
+    get:
+      tags: [Kayıt]
+      summary: Danışanların kayıtları (yalnızca kendi danışanları)
+      x-roles: [advisor]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }, { name: status, in: query, schema: { type: string, enum: [pending, approved, rejected] } }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+  /enrollments/{id}/advisor-decision:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Kayıt]
+      summary: Danışman onayı/reddi (ret koltuğu bekleme listesine aktarır)
+      x-roles: [advisor]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [approve], properties: { approve: { type: boolean } } } } }
+      responses: { "200": { description: Karar kaydedildi }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Error" } }
+
+  /terms/{id}/schedule/solve:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Program ve sınav]
+      summary: Ders programı çözücü (T-5)
+      description: |
+        Kısıtlar: derslik kapasitesi/türü, öğretim üyesi müsaitliği ve aynı anda iki yerde olamama, aynı yarıyılın zorunlu dersleri çakışmaz.
+        Çözüm yoksa `conflicts[]` çatışan kısıtları adlandırır. `apply:true` ve çözüm bulunursa program tek transaction'da uygulanır;
+        çözümsüz/zaman aşımında mevcut program DEĞİŞMEZ.
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { days: { type: integer, default: 5 }, slots_per_day: { type: integer, default: 8 }, time_limit_seconds: { type: integer, minimum: 1, maximum: 60, default: 30 }, seed: { type: integer }, apply: { type: boolean } } } } }
+      responses: { "200": { description: "`{status: solved|infeasible|timeout, placements?, conflicts?, applied, nodes, elapsed_ms}`" }, "400": { $ref: "#/components/responses/Validation" }, "404": { $ref: "#/components/responses/NotFound" } }
+  /terms/{id}/schedule:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Program ve sınav]
+      summary: Dönemin ders programı
+      x-roles: [all]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+  /sections/{id}/exams:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Program ve sınav]
+      summary: Sınav ekle — oda/öğretim üyesi/öğrenci çakışması reddedilir ve hepsi birlikte listelenir
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [kind, starts_at, duration_min], properties: { kind: { type: string, enum: [midterm, final, makeup] }, starts_at: { type: string, format: date-time }, duration_min: { type: integer, minimum: 15, maximum: 300 }, room: { type: string } } } } }
+      responses: { "201": { description: Eklendi }, "409": { description: "`exam_conflict` + conflicts[ROOM|INSTRUCTOR|STUDENT]" } }
+  /exams/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    delete:
+      tags: [Program ve sınav]
+      summary: Sınavı sil
+      x-roles: [registrar, dept_secretary]
+      responses: { "204": { description: Silindi }, "404": { $ref: "#/components/responses/NotFound" } }
+  /terms/{id}/exams:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Program ve sınav]
+      summary: Dönemin sınav takvimi
+      x-roles: [all]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+  /me/exam-schedule:
+    get:
+      tags: [Program ve sınav]
+      summary: Öğrencinin sınav takvimi
+      x-roles: [student]
+      responses: { "200": { description: "`{items[]}` zamana göre sıralı" } }
+
+  /sections/{id}/grade-components:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    put:
+      tags: [Not]
+      summary: Not yöntemi ve bileşen ağırlıkları (toplam 100; ilandan sonra kilitli)
+      x-roles: [instructor]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [method, components], properties: { method: { type: string, enum: [absolute, relative] }, components: { type: array, items: { type: object, properties: { name: { type: string, enum: [midterm, final, homework] }, weight: { type: integer, minimum: 1, maximum: 100 } } } } } } } }
+      responses: { "200": { description: Kaydedildi }, "400": { $ref: "#/components/responses/Validation" }, "403": { $ref: "#/components/responses/Forbidden" }, "409": { $ref: "#/components/responses/Error" } }
+  /sections/{id}/grading:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Not]
+      summary: Not yöntemi, ağırlıklar ve ilan durumu (öğretim üyesi yalnız kendi şubesi)
+      x-roles: [instructor, registrar, dept_secretary]
+      responses: { "200": { description: Yapılandırma }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /sections/{id}/roster:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Not]
+      summary: Şubenin kayıtlı öğrencileri ve girilmiş puanları
+      x-roles: [instructor, registrar, dept_secretary]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }]
+      responses: { "200": { $ref: "#/components/responses/Page" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /sections/{id}/scores:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    put:
+      tags: [Not]
+      summary: Puan girişi (normal / bütünleme / mazeret; öncelik bütünleme > mazeret > normal)
+      x-roles: [instructor]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [entries], properties: { entries: { type: array, maxItems: 1000, items: { type: object, properties: { enrollment_id: { type: integer }, component: { type: string }, kind: { type: string, enum: [regular, makeup, excuse] }, score: { type: number, minimum: 0, maximum: 100 } } } } } } } }
+      responses: { "200": { description: Kaydedildi }, "403": { $ref: "#/components/responses/Forbidden" }, "409": { description: İlan edilmiş, giriş kilitli (grades_published) }, "422": { $ref: "#/components/responses/Error" } }
+  /sections/{id}/grades/publish:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Not]
+      summary: Notları hesapla ve ilan et (tek transaction; girişi kilitler; GANO işçisini tetikler)
+      x-roles: [instructor]
+      responses: { "200": { description: "`{method, results[{result_id, enrollment_id, student_id, total, letter}]}`" }, "409": { $ref: "#/components/responses/Error" } }
+  /sections/{id}/results:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Not]
+      summary: Şubenin ilan edilmiş sonuçları (öğretim üyesi yalnız kendi şubesi)
+      x-roles: [instructor, registrar, dept_secretary]
+      responses: { "200": { description: Sonuçlar }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /course-results/{id}/corrections:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Not]
+      summary: Not düzeltme talebi (ikinci kişi onaylayana kadar not DEĞİŞMEZ)
+      x-roles: [instructor]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [new_letter, reason], properties: { new_letter: { type: string, enum: [AA, BA, BB, CB, CC, DC, DD, FF] }, reason: { type: string } } } } }
+      responses: { "201": { description: Talep açıldı }, "403": { $ref: "#/components/responses/Forbidden" }, "409": { $ref: "#/components/responses/Error" } }
+  /grade-corrections:
+    get:
+      tags: [Not]
+      summary: Düzeltme talepleri
+      x-roles: [registrar, dept_secretary]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }, { name: status, in: query, schema: { type: string, enum: [pending, approved, rejected] } }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+  /grade-corrections/{id}/decision:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Not]
+      summary: Düzeltme kararı (çift onay; onayda eski/yeni not değiştirilemez geçmişe yazılır)
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [approve], properties: { approve: { type: boolean } } } } }
+      responses: { "200": { description: Karar verildi }, "403": { $ref: "#/components/responses/Forbidden" }, "409": { $ref: "#/components/responses/Error" } }
+  /course-results/{id}/objections:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Not]
+      summary: Nota itiraz (öğrenci yalnız kendi sonucuna)
+      x-roles: [student]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [reason], properties: { reason: { type: string, maxLength: 2000 } } } } }
+      responses: { "201": { description: İtiraz açıldı }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Error" } }
+  /me/objections:
+    get:
+      tags: [Not]
+      summary: İtirazlarım
+      x-roles: [student]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }]
+      responses: { "200": { $ref: "#/components/responses/Page" } }
+  /sections/{id}/objections:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Not]
+      summary: Şubenin itirazları (öğretim üyesi yalnız kendi şubesi)
+      x-roles: [instructor]
+      parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }]
+      responses: { "200": { $ref: "#/components/responses/Page" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /grade-objections/{id}/decision:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Not]
+      summary: İtirazı karara bağla (kabul → çift onaylı düzeltme talebi açılır)
+      x-roles: [instructor]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [accept, response], properties: { accept: { type: boolean }, new_letter: { type: string }, response: { type: string } } } } }
+      responses: { "200": { description: Karar verildi }, "403": { $ref: "#/components/responses/Forbidden" }, "409": { $ref: "#/components/responses/Error" } }
+  /students/{id}/results:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Not]
+      summary: Öğrencinin sonuçları ve GANO (canlı + önbellek)
+      x-roles: [student, advisor, registrar, dept_secretary]
+      responses: { "200": { description: "`{gano, gano_cached, results[]}`" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /programs/{id}/retake-policy:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    put:
+      tags: [Not]
+      summary: Tekrar alınan derslerde GANO politikası (last|best); programdaki tüm öğrenciler yeniden hesaplanır
+      x-roles: [registrar]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [policy], properties: { policy: { type: string, enum: [last, best] } } } } }
+      responses: { "200": { description: "`{recalculating_students}`" }, "403": { $ref: "#/components/responses/Forbidden" } }
+
+  /students/{id}/transcripts:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Belge]
+      summary: Transkript düzenle (içerik dondurulur, HMAC imzalı kod üretilir, denetime yazılır)
+      x-roles: [student, advisor, registrar, dept_secretary]
+      responses: { "201": { description: "`{id, code, verify_url, pdf_url, issued_at}`" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /documents/{id}/pdf:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Belge]
+      summary: Transkript PDF'i (QR kod içerir)
+      x-roles: [student, advisor, registrar, dept_secretary]
+      responses: { "200": { description: PDF, content: { application/pdf: { schema: { type: string, format: binary } } } }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" } }
+
+  /curriculum-versions/{id}/graduation-rules:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Mezuniyet]
+      summary: Mezuniyet kuralları (veri olarak JSON)
+      x-roles: [all]
+      responses: { "200": { description: Kurallar }, "404": { $ref: "#/components/responses/NotFound" } }
+    put:
+      tags: [Mezuniyet]
+      summary: Mezuniyet kurallarını tanımla (zorunlu dersler, seçmeli havuzlar, staj, GANO, AKTS)
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/GraduationRules" } } }
+      responses: { "200": { description: Kaydedildi }, "400": { $ref: "#/components/responses/Validation" }, "422": { $ref: "#/components/responses/Error" } }
+  /students/{id}/graduation-audit:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Mezuniyet]
+      summary: Mezuniyet denetimi (en uygun havuz ataması) ve kalan dersler
+      x-roles: [student, advisor, registrar, dept_secretary]
+      responses: { "200": { description: "`{report{can_graduate, missing[], pools[]...}, remaining_required_courses[]}`" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" } }
+
+  /reports/department-success:
+    get:
+      tags: [Rapor]
+      summary: Bölüm bazlı başarı (geçme oranı, ortalama katsayı)
+      x-roles: [reporting, registrar, dept_secretary]
+      parameters: [{ name: term_id, in: query, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Rapor }, "400": { $ref: "#/components/responses/Validation" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /reports/occupancy:
+    get:
+      tags: [Rapor]
+      summary: Bölüm bazlı şube doluluğu
+      x-roles: [reporting, registrar, dept_secretary]
+      parameters: [{ name: term_id, in: query, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Rapor }, "400": { $ref: "#/components/responses/Validation" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /reports/gano-distribution:
+    get:
+      tags: [Rapor]
+      summary: GANO dağılımı (aralıklara)
+      x-roles: [reporting, registrar, dept_secretary]
+      parameters: [{ name: department_id, in: query, schema: { type: integer } }, { name: program_id, in: query, schema: { type: integer } }]
+      responses: { "200": { description: Rapor }, "403": { $ref: "#/components/responses/Forbidden" } }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    id: { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    after: { name: after, in: query, description: Önceki sayfanın next_after değeri, schema: { type: integer, minimum: 0 } }
+    limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+  requestBodies:
+    Login:
+      required: true
+      content: { application/json: { schema: { type: object, required: [email, password], properties: { email: { type: string, format: email }, password: { type: string } } } } }
+    CodeName:
+      required: true
+      content: { application/json: { schema: { type: object, required: [code, name], properties: { code: { type: string }, name: { type: string } } } } }
+  responses:
+    Page:
+      description: Keyset sayfalı liste
+      content: { application/json: { schema: { $ref: "#/components/schemas/Page" } } }
+    Error:
+      description: Hata
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
+    Unauthorized:
+      description: Kimlik doğrulama gerekli ya da token geçersiz (401)
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
+    Forbidden:
+      description: Bu işlem için yetkiniz yok (403)
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
+    NotFound:
+      description: Kaynak bulunamadı (404)
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
+    Validation:
+      description: Girdi doğrulama hatası (400)
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
+  schemas:
+    ErrorBody:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties: { code: { type: string }, message: { type: string } }
+    RuleViolations:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: rule_violation }
+            message: { type: string }
+            total_ects: { type: integer }
+            max_ects: { type: integer }
+            violations:
+              type: array
+              items:
+                type: object
+                properties:
+                  code: { type: string, enum: [PREREQ_NOT_MET, TIME_CONFLICT, DUPLICATE_COURSE, ALREADY_PASSED, ECTS_LIMIT_EXCEEDED] }
+                  message: { type: string }
+                  section_ids: { type: array, items: { type: integer } }
+    Page:
+      type: object
+      properties:
+        items: { type: array, items: { type: object } }
+        next_after: { type: integer, nullable: true }
+    Tokens:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer }
+    Me:
+      type: object
+      properties:
+        id: { type: integer }
+        email: { type: string }
+        full_name: { type: string }
+        role: { type: string, enum: [student, instructor, advisor, dept_secretary, registrar, reporting] }
+        student_id: { type: integer }
+    PrereqExpr:
+      type: object
+      description: "Yaprak `{course_id}` ya da işlem `{op: and|or, args: [PrereqExpr]}` (en fazla 8 seviye, 64 düğüm)"
+      properties:
+        op: { type: string, enum: [and, or] }
+        course_id: { type: integer }
+        args: { type: array, items: { type: object } }
+    VerifyResult:
+      type: object
+      properties:
+        valid: { type: boolean }
+        document_id: { type: integer }
+        kind: { type: string }
+        issued_at: { type: string, format: date-time }
+        full_name: { type: string }
+        student_no: { type: string }
+        program: { type: string }
+        gano: { type: number }
+        course_count: { type: integer }
+    GraduationRules:
+      type: object
+      properties:
+        min_gano: { type: number, minimum: 0, maximum: 4 }
+        min_total_ects: { type: integer }
+        required: { type: array, items: { type: string }, description: Ders kodları; verilmezse müfredattaki zorunlu dersler }
+        pools:
+          type: array
+          maxItems: 8
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              courses: { type: array, items: { type: string } }
+              min_courses: { type: integer }
+              min_ects: { type: integer }
+        internship:
+          type: object
+          properties: { course: { type: string } }

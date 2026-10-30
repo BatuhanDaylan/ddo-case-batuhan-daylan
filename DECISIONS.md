@@ -216,3 +216,20 @@ ana sayfada (Prometheus sayaçları) gösterir.
 **Bilinen sınırlama:** Token'lar `localStorage`'da tutulur (XSS durumunda okunabilir); üretimde `HttpOnly` çerez + CSRF
 korumasına geçilmelidir. Arayüz için otomatik uçtan uca test (Playwright) yazılmadı; davranış `make verify` (API) ve elle
 yürütülen headless tarayıcı denemeleriyle doğrulandı.
+
+## 26. OpenAPI belgesi gömülü ve gerçek yönlendiriciyle birebir eşleşmek ZORUNDA
+**Karar:** `internal/openapi/openapi.yaml` binary'ye gömülür ve `/openapi.yaml` altında sunulur. `cmd/api/routes_test.go`,
+`chi.Walk` ile gerçek yönlendiricideki tüm rotaları çıkarır ve belgeyle iki yönlü karşılaştırır (belgelenmemiş rota ya da
+var olmayan rotayı belgeleyen kayıt CI'ı kırar); her işlemin `summary`, `responses`, `x-roles` ve herkese açık uçlarda
+`security: []` taşımasını da denetler.
+**Neden:** El yazısı API belgeleri zamanla gerçekten ayrışır. Bu test, belgenin doğruluğunu bakım disiplinine değil derleyiciye
+(CI) bırakır. Test, `/metrics`'in yanlışlıkla her HTTP yöntemine açık kaydedildiğini de ortaya çıkardı (şimdi yalnızca GET).
+**Sınırlama:** Yanıt gövdesi şemaları çoğunlukla özet düzeyindedir; yalnızca başlıca nesneler (hata, sayfa, token, kural ihlali,
+mezuniyet kuralları) tam şemalıdır.
+
+## 27. İzleme: kapalı varsayılan, kural iş sonuçları hata değil
+**Karar:** OpenTelemetry iz altyapısı varsayılan olarak noop'tur; `OTEL_TRACES_EXPORTER=stdout` ile açılır. Kayıt akışı kök span + 6
+aşama alt span'iyle izlenir. İş sonuçları (kural ihlali, zaten kayıtlı, kayıt kapalı) span'i `Error` yapmaz, `enrollment.outcome`
+özniteliğiyle ayrılır.
+**Neden:** Varsayılan açık olsaydı 15.000 isteklik yük testinin ölçümü, her isteğin izini yazma maliyetiyle bozulurdu. İş
+sonuçlarını hata saymak ise "hata oranı" panolarını normal kullanıcı reddiyle doldururdu. Ayrıntı: docs/TRACING.md.

@@ -23,8 +23,10 @@ import (
 	"github.com/batuhan-daylan/uninet/internal/graduation"
 	"github.com/batuhan-daylan/uninet/internal/httpx"
 	"github.com/batuhan-daylan/uninet/internal/metrics"
+	"github.com/batuhan-daylan/uninet/internal/openapi"
 	"github.com/batuhan-daylan/uninet/internal/registration"
 	"github.com/batuhan-daylan/uninet/internal/reports"
+	"github.com/batuhan-daylan/uninet/internal/telemetry"
 	"github.com/batuhan-daylan/uninet/internal/timetable"
 )
 
@@ -46,6 +48,17 @@ func run(log *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// OpenTelemetry: OTEL_TRACES_EXPORTER=stdout ile izler açılır; varsayılan kapalı (noop, maliyetsiz).
+	shutdownTrace, err := telemetry.Init(os.Getenv("OTEL_TRACES_EXPORTER"))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTrace(sctx)
+	}()
 
 	pool, err := db.Connect(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
 	if err != nil {
@@ -128,6 +141,7 @@ func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler,
 	docs *documents.Handler, grad *graduation.Handler, tt *timetable.Handler, rep *reports.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	r.Use(telemetry.Middleware)
 	r.Use(metrics.Middleware)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(25 * time.Second))
@@ -140,8 +154,9 @@ func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler,
 	})
 
 	r.Get("/health", healthHandler(pool))
-	r.Handle("/metrics", metrics.Handler()) // Prometheus kazıma ucu (üretimde ağ düzeyinde kısıtlanmalı)
-	docs.PublicRoutes(r)                    // GET /verify/{code}: kimlik gerektirmez, kodun HMAC imzası yetkidir
+	r.Get("/metrics", metrics.Handler().ServeHTTP) // Prometheus kazıma ucu (üretimde ağ düzeyinde kısıtlanmalı)
+	r.Get("/openapi.yaml", openapi.Handler)
+	docs.PublicRoutes(r) // GET /verify/{code}: kimlik gerektirmez, kodun HMAC imzası yetkidir
 
 	r.Route("/auth", func(r chi.Router) {
 		r.Post("/login", authH.Login)

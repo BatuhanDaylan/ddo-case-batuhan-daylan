@@ -25,6 +25,8 @@ services:
       SEED_DEMO: ${SEED_DEMO:-true}
       DB_MAX_CONNS: ${DB_MAX_CONNS:-40}
       HASH_CONCURRENCY: ${HASH_CONCURRENCY:-4}
+      # İzleme: OTEL_TRACES_EXPORTER=stdout ile her iz JSON olarak standart çıktıya yazılır (varsayılan: kapalı).
+      OTEL_TRACES_EXPORTER: ${OTEL_TRACES_EXPORTER:-}
     ports:
       - "8080:8080"
     depends_on:
