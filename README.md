@@ -131,11 +131,11 @@ Her satır `make verify` ile uçtan uca denenir (kimlik = tablodaki ad). Ayrınt
 
 | Kriter | Durum |
 |---|---|
-| Otomatik test (≥ 60) | **92 test fonksiyonu + 3 fuzz testi** (107 başarılı test, alt testler dahil); entegrasyon testleri **gerçek PostgreSQL**'e karşı |
+| Otomatik test (≥ 60) | **94 test fonksiyonu + 3 fuzz testi** (117 başarılı test, alt testler dahil); entegrasyon testleri **gerçek PostgreSQL**'e karşı |
 | Fuzz / özellik testleri (≥ 2) | 3 fuzz (`FuzzNodeJSON`, `FuzzParseCode`, `FuzzVerifyPassword`) + 5 rastgele-girdili özellik testi |
 | Çekirdek paket kapsamı ≥ %75 | `rules` 98,8 · `grading` 98,6 · `telemetry` 96,4 · `scheduler` 94,2 · `simulator` 89,7 · `documents` 85,4 · `graduation` 82,1 · `reports` 77,1 |
 | CI (build + test + lint + `govulncheck` + imaj) | GitHub Actions; gofmt, vet, staticcheck, entegrasyon testleri, govulncheck, imaj ve frontend derlemesi |
-| OpenAPI | 74 işlem, `/openapi.yaml`; **belge ile gerçek rotalar birebir eşleşir** (test) |
+| OpenAPI | 76 işlem, `/openapi.yaml`; **belge ile gerçek rotalar birebir eşleşir** (test) |
 | Prometheus `/metrics` | HTTP istek/süre (yol deseniyle), eşzamanlı istek, kayıt sonuçları |
 | OpenTelemetry izi | kayıt akışı, 7 span: [docs/TRACING.md](docs/TRACING.md) |
 | k6 + SLO tablosu | [docs/LOAD_TEST.md](docs/LOAD_TEST.md): hedefler **tuttu**, sınırlamalar dürüstçe yazıldı |
