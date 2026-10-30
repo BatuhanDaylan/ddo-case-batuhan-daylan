@@ -111,6 +111,18 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .alert.info { background: var(--info-bg); color: var(--info); }
 .violations { margin: 6px 0 0; padding-left: 18px; }
 .violations li { margin: 3px 0; }
+
+/* Sürükle-bırak program editörü */
+.sched-grid { display: grid; grid-template-columns: 56px repeat(5, minmax(110px, 1fr)); grid-template-rows: auto repeat(8, 44px); min-width: 640px; gap: 2px; }
+.sched-head { text-align: center; font-weight: 600; font-size: 0.85rem; padding: 6px 0; }
+.sched-time { font-size: 0.75rem; color: var(--muted); text-align: right; padding-right: 6px; }
+.sched-cell { border: 1px dashed var(--line); border-radius: 4px; background: var(--surface); }
+.sched-cell.good { background: var(--ok-bg); border-color: var(--ok); }
+.sched-cell.bad { background: var(--bad-bg); border-color: var(--bad); }
+.sched-block { z-index: 1; display: flex; flex-direction: column; justify-content: center; gap: 2px; margin: 2px; padding: 2px 8px; border: 1px solid var(--brand); border-radius: 6px; background: var(--brand-soft); color: var(--text); font: inherit; font-size: 0.8rem; text-align: left; cursor: grab; overflow: hidden; }
+.sched-block span { color: var(--muted); font-size: 0.72rem; }
+.sched-block.picked { outline: 2px solid var(--brand); background: var(--brand); color: var(--brand-ink); }
+.sched-block.picked span { color: inherit; }
 .empty { padding: 28px 12px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: var(--radius); }
 .skeleton > div { height: 18px; margin: 12px 0; border-radius: 6px; background: linear-gradient(90deg, var(--line), var(--brand-soft), var(--line)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }

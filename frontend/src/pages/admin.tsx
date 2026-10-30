@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { listAll, patch, post, put } from '../api';
 import { useAuth } from '../auth';
 import { Async, Badge, Card, DAYS, Notice, PageTitle, Table, TermPicker, fmtMinutes, useAction, useFetch } from '../ui';
+import { ScheduleEditor } from './ScheduleEditor';
 import { useTermSelect, type Sec, type Term } from './shared';
 
 interface Faculty { id: number; code: string; name: string }
@@ -291,6 +292,12 @@ export function Timetable() {
             )}
           </>
         )}
+      </Card>
+
+      <Card title="Programı elle düzenle (sürükle-bırak)">
+        <Async state={schedule} isEmpty={(d) => d.length === 0} empty="Düzenlenecek program yok. Önce çözücüyü çalıştırın.">
+          {(d) => <ScheduleEditor meetings={d} onChanged={schedule.reload} />}
+        </Async>
       </Card>
 
       <Card title="Mevcut ders programı">

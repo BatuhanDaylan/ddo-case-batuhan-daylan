@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -326,4 +327,88 @@ func TestExamCalendarRejectsAllConflictTypes(t *testing.T) {
 func user2(t *testing.T, e *env, email string) int64 {
 	t.Helper()
 	return scan[int64](t, e.pool, `INSERT INTO users (email,password_hash,full_name,role) VALUES ($1,'x',$1,'student') RETURNING id`, email)
+}
+
+// meetingOf bir dersin tek oturumunu döner.
+func (e *env) meetingOf(t *testing.T, course string) (id int64, day, start int, room string) {
+	t.Helper()
+	err := e.pool.QueryRow(context.Background(),
+		`SELECT m.id, m.day, m.start_min, r.code FROM section_meetings m JOIN rooms r ON r.id = m.room_id
+		   JOIN sections s ON s.id = m.section_id JOIN courses c ON c.id = s.course_id WHERE c.code = $1`, course).Scan(&id, &day, &start, &room)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+func TestMoveMeetingValidatesAndSaves(t *testing.T) {
+	e := setup(t)
+	if code, body := e.do("POST", e.solveURL(), e.reg, auth.RoleRegistrar, map[string]any{"apply": true, "time_limit_seconds": 10}); code != 200 || body["applied"] != true {
+		t.Fatalf("çözüm: %d %v", code, body)
+	}
+	id0, _, _, room0 := e.meetingOf(t, "C0")
+	_, day1, start1, _ := e.meetingOf(t, "C1") // C0 ile aynı yarıyılın zorunlu dersi
+	url := fmt.Sprintf("/section-meetings/%d", id0)
+
+	// 1) Aynı yarıyılın zorunlu dersinin saatine taşıma: reddedilir, ihlal ders koduyla adlandırılır, hiçbir şey değişmez.
+	code, body := e.do("PATCH", url, e.reg, auth.RoleRegistrar, map[string]any{"day": day1, "start_min": start1})
+	errObj, _ := body["error"].(map[string]any)
+	if code != 409 || errObj["code"] != "schedule_conflict" {
+		t.Fatalf("çakışan taşıma: %d %v", code, body)
+	}
+	if cs, _ := errObj["conflicts"].([]any); len(cs) == 0 || !containsAll(fmt.Sprint(cs), "C0", "C1") {
+		t.Errorf("ihlal ders kodlarıyla adlandırılmadı: %v", errObj["conflicts"])
+	}
+	if _, d, s, _ := e.meetingOf(t, "C0"); d == day1 && s == start1 {
+		t.Fatal("reddedilen taşıma yine de kaydedildi")
+	}
+
+	// 2) Çakışmasız bir boşluk ara (dry_run hiçbir şey yazmaz); bulunan yere gerçekten taşı.
+	var gotDay, gotStart int
+	for d := 1; d <= 5 && gotDay == 0; d++ {
+		for s := 540; s <= 540+6*60; s += 60 {
+			c, _ := e.do("PATCH", url, e.reg, auth.RoleRegistrar, map[string]any{"day": d, "start_min": s, "room": room0, "dry_run": true})
+			if c == 200 {
+				if _, dd, ss, _ := e.meetingOf(t, "C0"); (dd == d && ss == s) == false {
+					gotDay, gotStart = d, s
+					break
+				}
+			}
+		}
+	}
+	if gotDay == 0 {
+		t.Fatal("hiç boş yer bulunamadı")
+	}
+	if code, body := e.do("PATCH", url, e.reg, auth.RoleRegistrar, map[string]any{"day": gotDay, "start_min": gotStart, "room": room0}); code != 200 || body["saved"] != true {
+		t.Fatalf("geçerli taşıma: %d %v", code, body)
+	}
+	if _, d, s, _ := e.meetingOf(t, "C0"); d != gotDay || s != gotStart {
+		t.Errorf("taşıma uygulanmadı: gün %d saat %d", d, s)
+	}
+	if n := scan[int](t, e.pool, `SELECT count(*) FROM audit_log WHERE action='section_meeting.moved'`); n != 1 {
+		t.Errorf("taşıma denetime yazılmadı (%d)", n)
+	}
+
+	// 3) Yetki ve girdi doğrulaması.
+	if code, _ := e.do("PATCH", url, e.stu, auth.RoleStudent, map[string]any{"day": 1, "start_min": 540}); code != 403 {
+		t.Errorf("öğrenci taşıyabildi: %d", code)
+	}
+	if code, _ := e.do("PATCH", url, e.reg, auth.RoleRegistrar, map[string]any{"day": 6, "start_min": 540}); code != 400 {
+		t.Errorf("ızgara dışı gün: %d", code)
+	}
+	if code, _ := e.do("PATCH", url, e.reg, auth.RoleRegistrar, map[string]any{"day": 1, "start_min": 545}); code != 400 {
+		t.Errorf("hizasız saat: %d", code)
+	}
+	if code, _ := e.do("PATCH", "/section-meetings/999999", e.reg, auth.RoleRegistrar, map[string]any{"day": 1, "start_min": 540}); code != 404 {
+		t.Errorf("olmayan oturum: %d", code)
+	}
+}
+
+func containsAll(s string, parts ...string) bool {
+	for _, p := range parts {
+		if !strings.Contains(s, p) {
+			return false
+		}
+	}
+	return true
 }

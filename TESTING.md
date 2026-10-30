@@ -113,6 +113,7 @@ Metrikler: <http://localhost:8080/metrics> · OpenAPI: <http://localhost:8080/op
 | T-4 | `go test ./internal/grading ./internal/gradebook` (özellik testleri: harf tekdüzeliği, best ≥ last) |
 | T-5 | `go test -v -run 'TestSample|TestSolverAgrees' ./internal/scheduler` (kaba kuvvetle çapraz doğrulama) |
 | T-6 | `go test -run TestSolverMatchesBruteForce ./internal/graduation` |
+| BONUS (sürükle-bırak) | `go test -run TestMoveMeetingValidatesAndSaves ./internal/timetable` · `make verify` (F-4 içinde taşıma kontrolü) |
 | BONUS | `go test ./internal/registration -run TestRiskReasons` · `make verify` (BONUS) |
 | T-7 | `go test ./internal/documents` (imza kurcalama testi) · `make verify` (T-7) |
 

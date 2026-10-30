@@ -461,6 +461,13 @@ Content-Type: application/json
 GET {{base}}/terms/1/schedule?limit=50
 Authorization: Bearer {{stu}}
 
+### Bonus: oturumu taşı (sürükle-bırak arka ucu). dry_run:true yalnızca doğrular; çakışmada 409 + conflicts[]
+PATCH {{base}}/section-meetings/1
+Authorization: Bearer {{reg}}
+Content-Type: application/json
+
+{ "day": 2, "start_min": 600, "dry_run": true }
+
 ### Sınav ekle (oda/öğretim üyesi/öğrenci çakışması → 409, hepsi birlikte listelenir)
 POST {{base}}/sections/1/exams
 Authorization: Bearer {{sec}}

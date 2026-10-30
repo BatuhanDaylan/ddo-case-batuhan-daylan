@@ -53,6 +53,43 @@ func chkF4(t *T, e *env) {
 		panic(abort{})
 	}
 
+	// Elle düzenleme (sürükle-bırak arka ucu): aynı yarıyılın zorunlu dersinin saatine taşıma reddedilir ve hiçbir şey değişmez;
+	// boş bir saate taşıma kaydedilir; öğrenci taşıyamaz.
+	all := e.call("GET", p("/terms/%d/schedule?limit=50", w.term), e.stu, nil)
+	meet := map[int64]M{}
+	for _, x := range all.arr("items") {
+		m := x.(M)
+		meet[int64(m["section_id"].(float64))] = m
+	}
+	a, b := meet[w.sections["A"]], meet[w.sections["B"]]
+	t.must(a != nil && b != nil, "A/B oturumları programda yok")
+	bURL := p("/section-meetings/%d", int64(b["id"].(float64)))
+	conflict := e.call("PATCH", bURL, e.reg, M{"day": a["day"], "start_min": a["start_min"]})
+	t.must(conflict.Status == 409 && conflict.str("error.code") == "schedule_conflict" && len(conflict.arr("error.conflicts")) > 0,
+		"zorunlu ders çakışması reddedilmedi: %d %s", conflict.Status, conflict.Raw)
+	t.must(e.call("PATCH", bURL, e.stu, M{"day": 1, "start_min": 540}).Status == 403, "öğrenci oturum taşıdı")
+	moved := false
+	for d := 1; d <= 5 && !moved; d++ {
+		for s := 540; s <= 540+6*60 && !moved; s += 60 {
+			if d == int(b["day"].(float64)) && s == int(b["start_min"].(float64)) {
+				continue
+			}
+			if e.call("PATCH", bURL, e.reg, M{"day": d, "start_min": s, "dry_run": true}).Status != 200 {
+				continue
+			}
+			r := e.call("PATCH", bURL, e.reg, M{"day": d, "start_min": s})
+			t.must(r.Status == 200 && r.boolean("saved"), "geçerli taşıma kaydedilmedi: %d %s", r.Status, r.Raw)
+			moved = true
+			after := e.call("GET", p("/terms/%d/schedule?limit=50", w.term), e.stu, nil)
+			for _, x := range after.arr("items") {
+				if m := x.(M); int64(m["id"].(float64)) == int64(b["id"].(float64)) {
+					t.must(int(m["day"].(float64)) == d && int(m["start_min"].(float64)) == s, "taşıma programa yansımadı")
+				}
+			}
+		}
+	}
+	t.must(moved, "taşınabilecek boş saat bulunamadı")
+
 	// Görüntüleme: sayfalı program.
 	pg := e.call("GET", p("/terms/%d/schedule?limit=2", w.term), e.stu, nil)
 	t.must(pg.Status == 200 && len(pg.arr("items")) == 2 && pg.val("next_after") != nil, "program sayfası: %s", pg.Raw)

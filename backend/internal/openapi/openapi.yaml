@@ -450,6 +450,21 @@ paths:
       x-roles: [all]
       parameters: [{ $ref: "#/components/parameters/after" }, { $ref: "#/components/parameters/limit" }]
       responses: { "200": { $ref: "#/components/responses/Page" } }
+  /section-meetings/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    patch:
+      tags: [Program ve sınav]
+      summary: Ders oturumunu taşı (elle düzenleme; sürükle-bırak)
+      description: |
+        Oturumu başka gün/saate (ve isteğe bağlı derslik) taşır. Çözücünün bağımsız denetçisi önce ve sonra çalıştırılır;
+        yalnızca taşımanın **yeni oluşturduğu** ihlaller (derslik/öğretim üyesi/zorunlu ders grubu çakışması, uygunsuz derslik,
+        öğretim üyesi müsait değil) hepsi birlikte `conflicts[]` içinde 409 ile döner ve hiçbir şey yazılmaz. `dry_run:true`
+        yalnızca doğrular (arayüz bırakmadan önce çakışmayı anında göstermek için kullanır).
+      x-roles: [registrar, dept_secretary]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [day, start_min], properties: { day: { type: integer, minimum: 1, maximum: 5 }, start_min: { type: integer, description: "540 + n*60" }, room: { type: string }, dry_run: { type: boolean } } } } }
+      responses: { "200": { description: "`{valid, saved}`" }, "400": { $ref: "#/components/responses/Validation" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { description: "`schedule_conflict` + conflicts[] ya da `not_editable`" } }
   /sections/{id}/exams:
     parameters: [{ $ref: "#/components/parameters/id" }]
     post:

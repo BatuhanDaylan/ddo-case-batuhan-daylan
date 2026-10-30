@@ -39,6 +39,7 @@ func (h *Handler) Routes(r chi.Router) {
 	r.With(admins).Put("/instructors/{id}/unavailability", h.setUnavailability)
 	r.With(admins).Post("/terms/{id}/schedule/solve", h.solve)
 	r.Get("/terms/{id}/schedule", h.getSchedule)
+	r.With(admins).Patch("/section-meetings/{id}", h.moveMeeting)
 }
 
 type room struct {
