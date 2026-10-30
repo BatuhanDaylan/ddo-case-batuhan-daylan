@@ -128,7 +128,7 @@ func TestLoadIsIdempotentAndTargetsFound(t *testing.T) {
 		t.Errorf("GANO kuyruğu %d, beklenen 100", n)
 	}
 
-	target, err := LoadTarget(ctx, pool, "jwt-secret-jwt-secret-jwt-secret-1234", 50)
+	target, err := LoadTarget(ctx, pool, "jwt-secret-jwt-secret-jwt-secret-1234", 50, 0)
 	if err != nil || len(target.Students) != 50 || len(target.Sections) != 6 {
 		t.Fatalf("hedef: öğrenci=%d şube=%d err=%v", len(target.Students), len(target.Sections), err)
 	}

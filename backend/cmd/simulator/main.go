@@ -49,6 +49,7 @@ func run(cmd string, args []string) error {
 	students := fs.Int("students", 5000, "storm: istek atan öğrenci sayısı")
 	per := fs.Int("per-student", 3, "storm: öğrenci başına farklı şube sayısı")
 	conc := fs.Int("concurrency", 200, "storm: eşzamanlı istek sayısı")
+	offset := fs.Int("offset", 0, "tokens/storm: kaçıncı öğrenciden başlanacağı (farklı koşular farklı öğrencileri kullansın diye)")
 	api := fs.String("api", env("API_URL", "http://backend:8080"), "storm: API adresi")
 	_ = fs.Parse(args)
 
@@ -84,7 +85,7 @@ func run(cmd string, args []string) error {
 		return nil
 
 	case "tokens":
-		t, err := simulator.LoadTarget(ctx, pool, os.Getenv("JWT_SECRET"), *n)
+		t, err := simulator.LoadTarget(ctx, pool, os.Getenv("JWT_SECRET"), *n, *offset)
 		if err != nil {
 			return err
 		}
@@ -95,7 +96,7 @@ func run(cmd string, args []string) error {
 		return nil
 
 	case "storm":
-		t, err := simulator.LoadTarget(ctx, pool, os.Getenv("JWT_SECRET"), *students)
+		t, err := simulator.LoadTarget(ctx, pool, os.Getenv("JWT_SECRET"), *students, *offset)
 		if err != nil {
 			return err
 		}

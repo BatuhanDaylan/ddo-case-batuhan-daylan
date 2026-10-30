@@ -31,14 +31,14 @@ type StormStudent struct {
 	Token     string `json:"token"`
 }
 
-// LoadTarget ilk n simülasyon öğrencisi için token üretir ve kayıt anı şubelerini bulur.
+// LoadTarget offset sonrasındaki n simülasyon öğrencisi için token üretir ve kayıt anı şubelerini bulur.
 // Token'lar doğrudan JWT sırrıyla imzalanır (bu bir test aracıdır; 5.000 argon2 girişi yapmak yerine).
-func LoadTarget(ctx context.Context, pool *pgxpool.Pool, jwtSecret string, n int) (StormTarget, error) {
+func LoadTarget(ctx context.Context, pool *pgxpool.Pool, jwtSecret string, n, offset int) (StormTarget, error) {
 	var t StormTarget
 	iss := auth.NewIssuer(jwtSecret, 3*time.Hour)
 
 	rows, err := pool.Query(ctx,
-		`SELECT id, user_id FROM students WHERE student_no LIKE 'SIM%' ORDER BY id LIMIT $1`, n)
+		`SELECT id, user_id FROM students WHERE student_no LIKE 'SIM%' ORDER BY id LIMIT $1 OFFSET $2`, n, offset)
 	if err != nil {
 		return t, err
 	}

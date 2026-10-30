@@ -209,8 +209,14 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	err := h.pool.QueryRow(r.Context(),
 		`SELECT id, email, '', full_name, role FROM users WHERE id = $1`, p.UserID).
 		Scan(&u.ID, &u.Email, &u.Hash, &u.FullName, &u.Role)
-	if err != nil {
+	// Yalnızca "kayıt yok" 404'tür. Altyapı hatası (veritabanı donması/kopması) "kullanıcı yok" DEĞİLDİR: Internal onu
+	// 503 olarak (yeniden denenebilir) döner. Bu ayrım, veritabanı donması kaos testinde /me'nin 404 dönmesiyle fark edildi.
+	if errors.Is(err, pgx.ErrNoRows) {
 		httpx.Error(w, http.StatusNotFound, "not_found", "kullanıcı bulunamadı")
+		return
+	}
+	if err != nil {
+		httpx.Internal(w, err)
 		return
 	}
 	out := map[string]any{"id": u.ID, "email": u.Email, "full_name": u.FullName, "role": u.Role}
