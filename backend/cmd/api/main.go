@@ -19,6 +19,7 @@ import (
 	"github.com/batuhan-daylan/uninet/internal/config"
 	"github.com/batuhan-daylan/uninet/internal/db"
 	"github.com/batuhan-daylan/uninet/internal/httpx"
+	"github.com/batuhan-daylan/uninet/internal/registration"
 )
 
 func main() {
@@ -58,7 +59,10 @@ func run(log *slog.Logger) error {
 		if err := academic.SeedDemo(ctx, pool); err != nil {
 			return err
 		}
-		log.Info("demo kullanıcılar ve akademik veri hazır")
+		if err := registration.SeedDemo(ctx, pool); err != nil {
+			return err
+		}
+		log.Info("demo kullanıcılar, akademik yapı ve dönem/şubeler hazır")
 	}
 
 	iss := auth.NewIssuer(cfg.JWTSecret, cfg.AccessTTL)
@@ -69,7 +73,7 @@ func run(log *slog.Logger) error {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           newRouter(pool, iss, authH, academic.NewHandler(pool)),
+		Handler:           newRouter(pool, iss, authH, academic.NewHandler(pool), registration.NewHandler(pool)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -97,7 +101,8 @@ func run(log *slog.Logger) error {
 	return srv.Shutdown(sctx)
 }
 
-func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler, acad *academic.Handler) http.Handler {
+func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler,
+	acad *academic.Handler, reg *registration.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -123,6 +128,7 @@ func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler, acad *
 		r.Use(iss.Authenticate)
 		r.Get("/me", authH.Me)
 		acad.Routes(r)
+		reg.Routes(r)
 	})
 	return r
 }
