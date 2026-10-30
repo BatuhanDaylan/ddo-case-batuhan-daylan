@@ -240,7 +240,7 @@ dizinli 30,8 ms, dizinsiz paralel tarama **18,9 ms**, yani dizin daha yavaş) ve
 
 ### 4. Yapay zekâ kullandıysan, düzelttiğin bir çıktıyı (önce/sonra) göster
 
-Projeyi **Claude Code** ile geliştirdim. Üretilen kodun nasıl denetlendiğini gösteren üç somut düzeltme (üçü de testle yakalandı, görüşte değil):
+Projeyi **Claude Code** ile geliştirdim. Üretilen kodun nasıl denetlendiğini gösteren somut düzeltmeler (hepsi testle ya da ölçümle yakalandı, görüşte değil):
 
 **(a) Ders programı: öğretim üyesi müsaitliği sessizce kayboluyordu.** İlk (yapay zekâ üretimi) kod, öğretim üyelerini dilime ekleyip her birine
 işaretçi tutuyordu:
@@ -273,7 +273,21 @@ if err != nil { httpx.Internal(w, err); return }   // IsTransient → 503
 Neden yanlış: 500 "kodda hata var" demektir, istemciler yeniden denemez; 404 ise geçici bir altyapı sorununu kalıcı bir yanıta çevirir.
 `internal/httpx/transient_test.go` ve `internal/auth/me_integration_test.go` bunu sabitler.
 
-**(c) Dizin varsayımları ölçümle çürütüldü** (soru 3'teki ters örnek). Ayrıca CI ilk koşularda **kırıktı**: `go.mod` `go 1.26.0` yazdığı için
+**(d) Aralıklı `make verify` hatası: imza kodunun kanonik olmayan yazımı.** `make verify` yaklaşık 16 koşuda bir `F-6: bozulmuş kod doğrulandı`
+diyerek kırılıyordu. Bunu "kararsız test" diye geçmedim; kök nedeni buldum: imza 32 bayt = 256 bit, base64'te 43 karakter (258 bit), yani **son karakterde 2 kullanılmayan bit** var
+ve Go'nun varsayılan çözücüsü bunları yok sayıyor. Aynı imzayı temsil eden **4 farklı kod** vardı; test son karakteri değiştirince, rastgele yine aynı imzaya denk gelebiliyordu.
+Sahtecilik açığı değildi (imza değeri aynı), ama kodun tek yazımı olması gerekirdi.
+
+```go
+// ÖNCE: kullanılmayan bitleri yok sayar
+sig, err = base64.RawURLEncoding.DecodeString(right)
+// SONRA: yalnızca kanonik yazım
+sig, err = base64.RawURLEncoding.Strict().DecodeString(right)
+```
+
+`TestParseCodeRejectsNonCanonicalSignature`, `Strict()` kaldırılınca "aynı imzayı temsil eden 4 farklı yazım kabul edildi" diye kırılıyor; düzeltmeden sonra 40 ardışık `make verify` koşusu hatasız geçti.
+
+**(e) Dizin varsayımları ölçümle çürütüldü** (soru 3'teki ters örnek). Ayrıca CI ilk koşularda **kırıktı**: `go.mod` `go 1.26.0` yazdığı için
 `setup-go` tam 1.26.0'ı kuruyor ve `govulncheck` o sürümün standart kütüphanesindeki bilinen zafiyetleri buluyordu; yerelde güncel yama sürümü
 olduğu için görmemiştim. `go-version: "1.26"` + `check-latest` ile düzeltildi.
 

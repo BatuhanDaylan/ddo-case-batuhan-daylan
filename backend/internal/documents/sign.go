@@ -55,7 +55,9 @@ func ParseCode(code string) (id int64, sig []byte, err error) {
 	if err != nil || id < 1 {
 		return 0, nil, ErrInvalidCode
 	}
-	sig, err = base64.RawURLEncoding.DecodeString(right)
+	// Strict: 43 karakterin son karakterindeki kullanılmayan 2 bit sıfır olmak zorunda. Aksi halde aynı imzayı temsil eden
+	// 4 farklı kod olurdu (imza biçimi esnekliği); tek geçerli yazım olsun.
+	sig, err = base64.RawURLEncoding.Strict().DecodeString(right)
 	if err != nil || len(sig) != sha256.Size {
 		return 0, nil, ErrInvalidCode
 	}

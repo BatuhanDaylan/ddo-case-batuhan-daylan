@@ -1,6 +1,7 @@
 package documents
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -71,4 +72,26 @@ func FuzzParseCode(f *testing.F) {
 	f.Fuzz(func(t *testing.T, code string) {
 		_, _, _ = ParseCode(code)
 	})
+}
+
+// İmzanın son base64 karakteri 4 bit veri + 2 kullanılmayan bit taşır. Kullanılmayan bitler farklı olan kodlar
+// aynı imzaya çözülebilirdi; ParseCode aynı imzayı temsil eden YALNIZCA tek yazımı kabul etmeli.
+func TestParseCodeRejectsNonCanonicalSignature(t *testing.T) {
+	s, _ := NewSigner(strings.Repeat("k", 32))
+	code := s.Code(7, SHA256Hex([]byte("içerik")))
+	_, want, err := ParseCode(code)
+	if err != nil {
+		t.Fatalf("kanonik kod reddedildi: %v", err)
+	}
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	same := 0
+	for _, c := range alphabet {
+		_, got, err := ParseCode(code[:len(code)-1] + string(c))
+		if err == nil && bytes.Equal(got, want) {
+			same++
+		}
+	}
+	if same != 1 {
+		t.Fatalf("aynı imzayı temsil eden %d farklı yazım kabul edildi, beklenen yalnızca 1", same)
+	}
 }
