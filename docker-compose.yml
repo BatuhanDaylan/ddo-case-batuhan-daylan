@@ -53,6 +53,19 @@ services:
       backend:
         condition: service_healthy
 
+  # Uçtan uca doğrulama: `make verify`. Her F-/T- kimliği için PASS/FAIL tablosu basar; hata varsa çıkış kodu ≠ 0.
+  # Test verisini doğrudan veritabanına kurar (koşuya özgü ek ile), geri kalanı gerçek HTTP API üzerinden dener.
+  verify:
+    build: ./backend
+    profiles: ["verify"]
+    entrypoint: ["verify"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable
+      API_URL: http://backend:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+
   # k6 yük testi: `make load`. Token dosyasını simulator üretir (/data/tokens.json).
   k6:
     image: grafana/k6:0.54.0
