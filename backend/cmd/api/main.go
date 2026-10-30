@@ -23,6 +23,7 @@ import (
 	"github.com/batuhan-daylan/uninet/internal/graduation"
 	"github.com/batuhan-daylan/uninet/internal/httpx"
 	"github.com/batuhan-daylan/uninet/internal/registration"
+	"github.com/batuhan-daylan/uninet/internal/timetable"
 )
 
 func main() {
@@ -68,6 +69,9 @@ func run(log *slog.Logger) error {
 		if err := graduation.SeedDemo(ctx, pool); err != nil {
 			return err
 		}
+		if err := timetable.SeedDemo(ctx, pool); err != nil {
+			return err
+		}
 		log.Info("demo kullanıcılar, akademik yapı ve dönem/şubeler hazır")
 	}
 
@@ -89,7 +93,7 @@ func run(log *slog.Logger) error {
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: newRouter(pool, iss, authH, academic.NewHandler(pool), registration.NewHandler(pool),
-			gradebook.NewHandler(pool), docH, graduation.NewHandler(pool)),
+			gradebook.NewHandler(pool), docH, graduation.NewHandler(pool), timetable.NewHandler(pool)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -119,7 +123,7 @@ func run(log *slog.Logger) error {
 
 func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler,
 	acad *academic.Handler, reg *registration.Handler, gb *gradebook.Handler,
-	docs *documents.Handler, grad *graduation.Handler) http.Handler {
+	docs *documents.Handler, grad *graduation.Handler, tt *timetable.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -150,6 +154,7 @@ func newRouter(pool *pgxpool.Pool, iss *auth.Issuer, authH *auth.Handler,
 		gb.Routes(r)
 		docs.Routes(r)
 		grad.Routes(r)
+		tt.Routes(r)
 	})
 	return r
 }

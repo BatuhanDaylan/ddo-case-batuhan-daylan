@@ -141,3 +141,25 @@ eşikleriyle birlikte dersi bölünemez saymak akışla ifade edilemez; DP ikisi
 **Bilinen sınırlama:** Durum sayısı 300 bin ile sınırlıdır; aşılırsa 422 `rules_too_complex` döner
 (en fazla 8 havuz, havuz başına 50 ders / 500 AKTS eşiği doğrulanır).
 **Toplam AKTS:** Denklik çift saymaz; yalnızca gerçekten başarılan dersler toplanır.
+
+## 19. Ders programı: bit maskeli CSP, yeniden başlatmalı MRV araması, açıklamalı çözümsüzlük
+**Karar:** Çözücü `internal/scheduler` içinde saf bir kısıt tatmin problemi çözücüsüdür. Her etkinlik için
+(başlangıç saati, derslik) seçilir. Çakışma denetimi, derslik/öğretim üyesi/grup başına haftalık saatlerin tek bir
+`uint64` bit maskesi olmasıyla yapılır (en fazla 64 haftalık saat). Değişken seçimi "en kısıtlı önce" (MRV): geçerli
+çifti en az olan etkinlik seçilir, çifti kalmayan etkinlik varsa dal hemen kesilir (ileriye dönük denetim). Arama giderek
+büyüyen düğüm sınırıyla ve değişen eşitlik bozma sırasıyla yeniden başlatılır.
+**Alternatifler:** (1) Yerel arama/benzetilmiş tavlama: çözüm bulur ama çözümsüzlüğü KANITLAYAMAZ ve çatışma açıklaması
+vermez. (2) SAT/CP çözücü kütüphanesi: ek bağımlılık ve imaj boyutu; ölçek (60 ders) bunu gerektirmiyor. (3) Salt
+geri izleme: zor örneklerde takılır; yeniden başlatma bunu önler.
+**Çözümsüzlük açıklaması iki katmanlıdır:** (a) KESİN analiz, arama başlamadan: uygun derslik yok, öğretim üyesinin
+ardışık müsait aralığı yok, öğretim üyesi/grup/derslik havuzu aşırı yük (hepsi gerekli koşuldur, ihlal = çözüm yok).
+(b) Arama bir turda sınıra takılmadan biterse çözümsüzlük KANITLANMIŞ olur ve en çok zorlanan etkinlikler ile
+engelleyen kısıt türleri raporlanır (bu açıklama yaklaşıktır, kesin değildir; arayüzde "yaklaşık" diye anılmalı).
+**Kanıt:** (1) 60 ders / 12 derslik / 20 öğretim üyesi örneği 10 farklı tohumda ms düzeyinde çözülür; (2) 400 rastgele
+küçük problemde "çözüldü" ⇒ bağımsız denetçi geçerli bulur ve kaba kuvvet de çözüm bulur; "çözümsüz" ⇒ kaba kuvvet de
+bulamaz.
+**Bilinen sınırlama:** Grup içi tüm etkinlikler çakışmaz kabul edilir; aynı dersin paralel şubeleri aynı grupta ise
+birbirini de dışlar. Etkinlikler tek parça (ardışık saat) yerleşir.
+**API:** `POST /terms/{id}/schedule/solve` çözümsüz/zaman aşımında mevcut programı DEĞİŞTİRMEZ (`applied:false`);
+çözüm bulunur ve `apply:true` ise dönemin oturumları tek transaction'da değiştirilir ve denetime yazılır. Çıktı,
+yazılmadan önce bağımsız `Check` ile bir kez daha doğrulanır (savunma amaçlı).
