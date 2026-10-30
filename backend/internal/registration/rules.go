@@ -146,10 +146,40 @@ func loadInput(ctx context.Context, q querier, studentID int64, candidateIDs []i
 	if err := rows.Err(); err != nil {
 		return out, err
 	}
+	// Denklik: öğrenci Y'yi geçtiyse "X yerine Y sayılır" kaydı olan X de geçilmiş sayılır.
+	if len(passed) > 0 {
+		passedIDs := make([]int64, 0, len(passed))
+		for id := range passed {
+			passedIDs = append(passedIDs, id)
+		}
+		rows, err = q.Query(ctx,
+			`SELECT course_id, substitute_course_id FROM course_equivalences WHERE substitute_course_id = ANY($1)`,
+			passedIDs)
+		if err != nil {
+			return out, err
+		}
+		eq := rules.Equivalences{}
+		for rows.Next() {
+			var course, sub int64
+			if err := rows.Scan(&course, &sub); err != nil {
+				rows.Close()
+				return out, err
+			}
+			eq[course] = append(eq[course], sub)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return out, err
+		}
+		passed = rules.ExpandPassed(passed, eq)
+	}
+
+	// Muaf dersler notsuzdur; GANO'ya girmez.
 	var gano float64
 	if err := q.QueryRow(ctx,
 		`SELECT COALESCE(SUM(r.grade_point * c.ects) / NULLIF(SUM(c.ects), 0), 0)::float8
-		   FROM course_results r JOIN courses c ON c.id = r.course_id WHERE r.student_id = $1`,
+		   FROM course_results r JOIN courses c ON c.id = r.course_id
+		  WHERE r.student_id = $1 AND NOT r.exempt`,
 		studentID).Scan(&gano); err != nil {
 		return out, err
 	}

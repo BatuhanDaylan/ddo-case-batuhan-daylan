@@ -110,6 +110,13 @@ func SeedDemo(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 	}
 
+	// Denklik: 2021 müfredatındaki Ayrık Matematik (BM104) yerine Veri Yapıları (BM105) sayılır.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO course_equivalences (course_id, substitute_course_id) VALUES ($1, $2)`,
+		courseIDs["BM104"], courseIDs["BM105"]); err != nil {
+		return err
+	}
+
 	for year, plan := range map[int][]placement{2021: curriculum2021, 2024: curriculum2024} {
 		if err := insertVersion(ctx, tx, programID, year, plan, courseIDs); err != nil {
 			return err

@@ -64,3 +64,18 @@ değişikliği `pg_advisory_xact_lock` altında yapılır.
 **Neden:** Ağır okumalar T-1'deki kritik bölümü (şube kilidi) uzatmaz. Öğrenci kilidi, aynı öğrencinin iki
 şubeye eşzamanlı kaydolup AKTS/çakışma kuralını aşmasını önler (testle kanıtlandı: 10 eşzamanlı istek, limit 30
 AKTS → tam 5 başarılı). Kilit sırası tek yönlü olduğundan kilitlenme (deadlock) oluşmaz.
+
+## 11. Müfredat öğrencinin GİRİŞ yılına bağlanır; "as_of" yalnızca vadeyi belirler
+**Karar:** `GET /students/{id}/required-courses?as_of=YYYY`, müfredat sürümünü `entry_year`'a göre çözer;
+`as_of` yalnızca öğrencinin o tarihte kaçıncı öğretim yılında olduğunu (`StudyYear`) ve derslerin vadesini
+(`overdue/current/future`) belirler.
+**Neden:** "2021 girişli öğrencinin 2024 itibarıyla alması gereken dersler" sorusu, 2024'te açılan yeni
+müfredattan etkilenmemeli. Mantık veritabanından bağımsız `rules` paketindedir ve birim testlidir.
+
+## 12. Denklik tek seviyelidir, muafiyet notsuz ve GANO dışıdır
+**Karar:** `course_equivalences` "X yerine Y sayılır" kaydıdır; zincirleme (A≡B, B≡C ⇒ A≡C) uygulanmaz.
+Muafiyet `course_results.exempt = true` satırıdır (harf `MU`), GANO sorgusu bunları dışlar; yalnızca
+öğrenci işleri verebilir.
+**Neden:** Zincirleme denklik, yönetici hatasıyla beklenmedik dersleri "geçilmiş" saydırabilir; açık kayıt
+girmek denetlenebilirliği artırır. Denklik hem ön koşul/tekrar kontrolünde hem müfredat durumunda aynı
+`ExpandPassed` fonksiyonuyla uygulanır, böylece iki yer birbirinden ayrışmaz.

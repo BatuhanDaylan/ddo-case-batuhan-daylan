@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/batuhan-daylan/uninet/internal/auth"
 	"github.com/batuhan-daylan/uninet/internal/httpx"
 	"github.com/batuhan-daylan/uninet/internal/rules"
 )
@@ -177,43 +176,12 @@ func (h *Handler) createVersion(w http.ResponseWriter, r *http.Request) {
 // Erişim: öğrenci yalnızca kendisini, danışman yalnızca danışanlarını görür;
 // öğrenci işleri ve bölüm sekreteri tümünü; diğer roller 403 alır.
 func (h *Handler) studentCurriculum(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
+	st, ok := h.authorizeStudent(w, r)
 	if !ok {
 		return
 	}
-	var (
-		userID, programID int64
-		advisorID         *int64
-		entryYear         int
-	)
-	err := h.pool.QueryRow(r.Context(),
-		`SELECT user_id, program_id, entry_year, advisor_id FROM students WHERE id = $1`, id).
-		Scan(&userID, &programID, &entryYear, &advisorID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		httpx.Error(w, http.StatusNotFound, "not_found", "öğrenci bulunamadı")
-		return
-	}
-	if err != nil {
-		internal(w, err)
-		return
-	}
 
-	p, _ := auth.PrincipalFrom(r.Context())
-	allowed := false
-	switch p.Role {
-	case auth.RoleRegistrar, auth.RoleDeptSecretary:
-		allowed = true
-	case auth.RoleStudent:
-		allowed = p.UserID == userID
-	case auth.RoleAdvisor:
-		allowed = advisorID != nil && *advisorID == p.UserID
-	}
-	if !allowed {
-		httpx.Error(w, http.StatusForbidden, "forbidden", "bu öğrencinin müfredatını görme yetkiniz yok")
-		return
-	}
-
-	vid, err := ResolveVersion(r.Context(), h.pool, programID, entryYear)
+	vid, err := ResolveVersion(r.Context(), h.pool, st.ProgramID, st.EntryYear)
 	if errors.Is(err, pgx.ErrNoRows) {
 		httpx.Error(w, http.StatusNotFound, "no_curriculum", "bu giriş yılı için tanımlı müfredat yok")
 		return

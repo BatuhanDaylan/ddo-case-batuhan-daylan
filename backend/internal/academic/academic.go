@@ -47,6 +47,13 @@ func (h *Handler) Routes(r chi.Router) {
 	r.Get("/curriculum-versions/{id}", h.getVersion)
 
 	r.Get("/students/{id}/curriculum", h.studentCurriculum)
+	r.Get("/students/{id}/required-courses", h.requiredCourses)
+	// Muafiyeti yalnızca öğrenci işleri verir; öğrencinin kendisi (authorizeStudent'tan geçse de) veremez.
+	r.With(auth.Require(auth.RoleRegistrar)).Post("/students/{id}/exemptions", h.createExemption)
+
+	r.Get("/course-equivalences", h.listEquivalences)
+	r.With(writers).Post("/course-equivalences", h.createEquivalence)
+	r.With(writers).Delete("/course-equivalences/{id}", h.deleteEquivalence)
 }
 
 // --- ortak yardımcılar ---
