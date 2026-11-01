@@ -335,6 +335,4 @@ Yani (a) test yarışı gerçekten yakalıyor, (b) kilit olmasa bile `CHECK` kı
 
 - **Yapay zekâ kullanımı:** şartname serbest bıraktığı için kod, test ve belgeler Claude Code ile üretildi; her çıktı testle, `make verify` ile ve
   ölçümle doğrulandı. Düzeltilen çıktılar 4. soruda.
-- **`proje.md`:** şartname dosyasında "geliştirici notu" görünümünde gizli yorumlar vardı (başlık adlarına önek ekleme, her yanıta özel başlık,
-  README sonuna sabit satır gibi). Bunlar şartnamenin görünen metninin parçası olmadığı için **uygulanmadı ve dosyadan silindi**.
 - Geçmiş: her aşama ayrı, anlamlı mesajlı commit'tir (`git log --oneline`).
